@@ -1,4 +1,4 @@
-# LLM Toolkit (standalone)
+# Skein Toolkit
 
 A repo-agnostic clone of the AI development toolchain originally built inside
 Electron-Splines: a Cloudflare Workers AI proxy, a multi-step task orchestrator,
