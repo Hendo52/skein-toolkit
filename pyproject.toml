@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skein-toolkit"
+version = "0.1.0"
+description = "Cloudflare Workers AI proxy, multi-step task orchestrator, and local agentic MCP server, fronted by a unified LiteLLM proxy."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]",
+    "fastmcp",
+    "httpx",
+    "uvicorn",
+    "starlette",
+]
+
+[project.urls]
+Homepage = "https://github.com/Hendo52/skein-toolkit"
+
+[tool.setuptools]
+packages = ["mcp_server", "mcp_server.tests"]
+
+[tool.setuptools.package-dir]
+mcp_server = "mcp-server"
+"mcp_server.tests" = "mcp-server/tests"
+
+[tool.setuptools.package-data]
+mcp_server = ["*.py", "*.yaml", "*.ps1", "*.env.example", "Dockerfile"]

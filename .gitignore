@@ -7,6 +7,11 @@ __pycache__/
 *.pyc
 .venv/
 
+# Build artifacts (PEP 517/518, AT-1147)
+build/
+dist/
+*.egg-info/
+
 # Node
 node_modules/
 
