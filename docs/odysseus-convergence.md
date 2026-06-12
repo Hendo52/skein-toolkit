@@ -153,9 +153,48 @@ forward direction (skein-toolkit contributing to Odysseus).
    `McpServer(transport="sse", url="http://127.0.0.1:3100/sse")`, and confirm
    Odysseus's agent loop lists and can call its tools under the
    `mcp__local-mcp__<tool>` namespace. This is the "no/minimal changes"
-   hypothesis above turned into an actual test -- currently unverified.
-   Depends on AT-1146 (needs a working Docker/Python environment to run both
-   projects side by side).
+   hypothesis above turned into an actual test. Depends on AT-1146 (needs a
+   working Docker/Python environment to run both projects side by side).
+
+   **Status: done 2026-06-13.** Verified directly against Odysseus's real
+   `src/mcp_manager.py` `McpManager` class (cloned to a local sibling
+   `odysseus-local/` checkout) calling `connect_server(server_id="local-mcp",
+   transport="sse", url="http://127.0.0.1:3100/sse")` against the already-running
+   FastMCP SSE server from this repo's `local-mcp.py` architecture (the
+   pre-existing `scripts/local-mcp.py` instance on port 3100 was used as the
+   server under test, rather than starting a second instance or the full
+   `docker-compose` stack -- both copies share the identical
+   `mcp.server.fastmcp.FastMCP` + `mcp.sse_app()` SSE-transport shape, so the
+   thing AT-1152 actually needs to verify -- can Odysseus's SSE client connect
+   to *this kind* of server -- is identical regardless of which copy answers).
+   The full docker-compose stack was deliberately not used: Odysseus's
+   `docker-compose.yml` hardcodes `searxng` to `127.0.0.1:8080`, which
+   conflicts with this machine's pre-existing unrelated `searxng-searxng-1`
+   container, and the multi-service build-from-source stack is unnecessary
+   weight for testing a single SSE connection.
+
+   Results, all matching the "no/minimal changes" hypothesis exactly:
+   - `connect_server(...)` returned `True`; `mgr._connections["local-mcp"]`
+     recorded `{"status": "connected", "name": "local-mcp (skein-toolkit
+     architecture)", "transport": "sse", "tool_count": 9}`.
+   - `get_all_tools()` discovered all 9 tools under the predicted
+     `mcp__local-mcp__<tool>` namespace: `create_test`, `fetch_page`,
+     `fs_read_file`, `fs_write_file`, `list_directory`, `list_skills`,
+     `load_skill`, `run_shell`, `web_search`.
+   - `call_tool("mcp__local-mcp__list_skills", {})` round-tripped successfully,
+     returning the real skills-directory listing
+     (`{"stdout": "Available skills:\n  burst-merge\n  ... task-decomposition\n
+     ...", "stderr": "", "exit_code": 0}`).
+
+   No code changes were required on either side. (A non-fatal
+   `RuntimeError`/`CancelledError` -- "Attempted to exit cancel scope in a
+   different task than it was entered in" -- appeared at the verification
+   script's `asyncio.run()` shutdown; this is a known anyio/`AsyncExitStack`
+   artifact of one-shot scripts using `mcp.client.sse.sse_client`, not a defect
+   in Odysseus's or skein-toolkit's code, and does not affect Odysseus's real
+   long-lived-event-loop usage.) The `odysseus-local/` checkout and the
+   scratch verification script were not committed; the verification script was
+   deleted after use.
 
 2. **AT-1153 (Medium):** Generalize the OQ/task-queue ledger integration
    (AT-1137-1139's `create_open_question`/`create_actionable_task`, after
