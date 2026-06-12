@@ -39,7 +39,15 @@ see `CF_PROXY_OQ_LEDGER_PATH` in the README.
 
 ## License
 
-See `LICENSE`. Licensing terms for external contributions to this standalone
-repo (as distinct from the proprietary Electron-Splines source repo) have not
-yet been finalized by the project owners -- do not assume MIT/Apache-style
-terms until `LICENSE` is updated to say so.
+This repo is licensed under the Apache License, Version 2.0 -- see `LICENSE`
+and `NOTICE`. This is distinct from (and a deliberate relaxation of) the
+proprietary license on the Electron-Splines source repository this toolkit
+was spun off from; that repository's license is unaffected.
+
+By submitting a contribution (PR, patch, etc.), you agree it is licensed
+under Apache-2.0, consistent with section 5 ("Submission of Contributions")
+of `LICENSE` -- no separate CLA is required. This permissive licensing is
+intentional: it allows the toolchain to be adopted by other projects (goal A)
+and incorporated into complementary copyleft projects such as Odysseus
+(AGPL-3.0, goal B), since Apache-2.0 code can be merged into an AGPL-3.0
+codebase without restriction.

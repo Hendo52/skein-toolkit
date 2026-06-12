@@ -75,3 +75,13 @@ Cloudflare/Docker config). If the original AT-1117/1118 scope (mirroring the
 entire Electron-Splines app and engine source trees into this repo) is still
 wanted, that is a separate, much larger effort and should be re-scoped with
 the architect first.
+
+## License
+
+Licensed under the Apache License, Version 2.0 -- see `LICENSE` and `NOTICE`.
+This is a deliberate relaxation from the proprietary Electron-Splines source
+repository's license, applying only to this standalone toolkit: the goal is
+to let other projects and contributors adopt and extend the MCP
+server/orchestrator/CF-proxy toolchain, and to make it mergeable into
+complementary open-source projects (e.g. Odysseus, AGPL-3.0 -- permissively
+licensed code can be incorporated into an AGPL project).
