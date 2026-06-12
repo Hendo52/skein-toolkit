@@ -2,7 +2,7 @@ services:
   mcp-server:
     build:
       context: ./mcp-server
-    image: "{{IMAGE_NAME}}/mcp-server:{{TAG}}"
+    image: "skein-toolkit/mcp-server:dev"
     container_name: llm-toolkit-mcp-server
     ports:
       - "3100:3100"
