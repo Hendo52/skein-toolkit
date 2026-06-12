@@ -110,15 +110,41 @@ forward direction (skein-toolkit contributing to Odysseus).
   attribution to Odysseus's own `ACKNOWLEDGMENTS.md` (the file the README
   already points to for license/attribution info), not just rely on a code
   comment.
-- **Process unknowns (need verification before a real PR):** Odysseus's
-  `CONTRIBUTING.md` exists but its DCO/CLA requirements weren't readable via
-  the fetch performed for this investigation (GitHub rate-limited a follow-up
-  search request). Before opening a PR: read `CONTRIBUTING.md` and
-  `ROADMAP.md` directly, confirm whether a CLA/DCO sign-off is required, and
-  check the "help wanted" framing the README gives ("fresh-install testing,
-  provider setup bugs, mobile/editor polish, docs, and small focused
-  refactors") -- a new MCP-server-integration feature may need a
-  design-discussion issue first rather than a direct PR.
+- **Process, verified 2026-06-13 (AT-1154) from `CONTRIBUTING.md`/`ROADMAP.md`
+  read directly via the GitHub Contents API:**
+  - **No CLA/DCO requirement.** Neither file mentions a sign-off process;
+    `CONTRIBUTING.md` covers branch model, setup, checks, PR/issue content,
+    visual-style rules, and code conventions, but no contributor-agreement
+    step.
+  - **LLM-agent PRs require an issue first -- this is explicit and
+    agent-targeted.** Verbatim from `CONTRIBUTING.md`'s Pull Requests section:
+    > **Auto-generated PRs.** If you are running an LLM agent (Devin, Cursor,
+    > OpenHands, Claude Code, etc.) against this repo: please open an issue
+    > describing the problem first instead of opening a PR directly. Bulk
+    > agent-generated PRs that don't match the project's visual style or
+    > contribution format will be closed without review, even when the
+    > underlying fix is correct.
+
+    This directly governs AT-1155: the convergence deliverable must start as
+    an **issue**, not a draft PR, regardless of how complete the integration
+    is.
+  - **Branch model:** PRs target `dev`, not `main` (`main` is the
+    curated/release branch, fast-forwarded from `dev`). If AT-1155 ever
+    reaches the PR stage, the base branch must be `dev`.
+  - **Commit style:** Conventional Commits (`type(scope): summary`) --
+    already skein-toolkit's convention, no adjustment needed.
+  - **"Before You Start" guidance reinforces issue-first:** "If you want to
+    work on a large feature, open an issue first and describe the approach."
+    A new MCP-server-registry integration is squarely "large feature."
+  - **Visual-style rules (CSS variables, no emoji, screenshot requirements)
+    do not apply** -- the proposed contribution (registry entry + doc page +
+    `ACKNOWLEDGMENTS.md` attribution) touches no UI.
+  - **`ROADMAP.md` "Help Wanted" relevance:** no line item names "external
+    MCP server" integration directly, but "Better AI integration for Notes
+    and Todos" and "More tests around endpoint probing and provider setup"
+    are adjacent backend/agent-tooling areas -- useful framing for the issue,
+    not a direct match. The roadmap does **not** discourage the idea; it's
+    simply not yet on it.
 
 ## (c) Concrete follow-up AT items if convergence is pursued
 
@@ -144,21 +170,34 @@ forward direction (skein-toolkit contributing to Odysseus).
    full and document the actual PR process (CLA/DCO, design-issue-first
    norms, test expectations) in this file's "(b)" section, replacing the
    "process unknowns" caveat above with verified facts. Prerequisite for any
-   real upstream PR.
+   real upstream PR. **Status: done 2026-06-13** -- see verified facts in (b)
+   above. Key result: no CLA/DCO, but `CONTRIBUTING.md` explicitly requires
+   LLM agents to open an **issue first**, never a direct PR.
 
-4. **AT-1155 (Medium, contingent on AT-1152-1154):** Open a draft PR to
-   Odysseus adding `local-mcp.py`/`devserver-mcp.py` as a documented
-   "external MCP server" example (registry entry + short doc page), with
-   Apache-2.0 attribution added to `ACKNOWLEDGMENTS.md`. This is the actual
-   convergence deliverable; everything above is verification and prep.
+4. **AT-1155 (Medium, contingent on AT-1152-1153, revised per AT-1154):**
+   Per `CONTRIBUTING.md`'s explicit LLM-agent policy, the convergence
+   deliverable is **an issue, not a PR**: open a GitHub issue on
+   `pewdiepie-archdaemon/odysseus` describing the proposed "external MCP
+   server" integration (skein-toolkit's `local-mcp.py`/`devserver-mcp.py` as
+   an `McpServer(transport="sse", url=...)` registry entry + a short doc
+   page), referencing AT-1152's verification results and offering
+   Apache-2.0-attributed code via `ACKNOWLEDGMENTS.md` if maintainer interest
+   is confirmed. Only proceed to a draft PR against `dev` (never `main`) if
+   the maintainer responds favorably to the issue. This is the actual
+   convergence deliverable; everything above is verification and prep. **This
+   is a visible external action (issue on a third-party repo) requiring a
+   separate go-ahead, same as AT-1144.**
 
 ## Caveats on this investigation
 
-This doc was written from `WebFetch` reads of the upstream repo's README,
-`mcp_servers/memory_server.py`, `src/agent_loop.py`, `src/tool_utils.py`, and
-`core/database.py` (one fetch per file; a follow-up GitHub code-search request
-was rate-limited at HTTP 429 and not retried). The `McpServer` schema and
-`mcp__<server>__<tool>` namespacing are read directly from source and are
-high-confidence; the `CONTRIBUTING.md`/DCO process is not yet verified (see
-AT-1154). No Odysseus code was run -- AT-1152 is the first item that requires
-actually exercising the integration.
+This doc was written from `WebFetch`/`gh api` reads of the upstream repo's
+README, `mcp_servers/memory_server.py`, `src/agent_loop.py`,
+`src/tool_utils.py`, `core/database.py`, `CONTRIBUTING.md`, and `ROADMAP.md`
+(one fetch per file; an earlier follow-up GitHub code-search request was
+rate-limited at HTTP 429 and not retried, but was not needed once
+`CONTRIBUTING.md`/`ROADMAP.md` were read directly via the Contents API). The
+`McpServer` schema, `mcp__<server>__<tool>` namespacing, and the
+`CONTRIBUTING.md` process requirements (no CLA/DCO, issue-first for LLM
+agents, `dev`-branch PRs, Conventional Commits) are all read directly from
+source and are high-confidence. No Odysseus code was run -- AT-1152 is still
+the first item that requires actually exercising the integration.
