@@ -1,0 +1,235 @@
+# LiteLLM unified proxy config
+# Routes requests to local Ollama, CF Workers AI (via local-mcp.py proxy), and frontier APIs.
+# Start with: mcp-server/start-litellm.ps1
+# Dashboard: http://localhost:4000/ui  (requires LITELLM_MASTER_KEY)
+# Spend API: http://localhost:4000/spend/calculate
+
+model_list:
+
+  # ─── LOCAL TIER — Ollama (free, runs on local hardware) ───────────────────
+
+  - model_name: local/qwen2.5-coder:7b
+    litellm_params:
+      model: ollama/qwen2.5-coder:7b
+      api_base: http://localhost:11434
+    model_info:
+      description: "Fast local coder, tool-use, 32k context. Best for quick edits."
+
+  - model_name: local/qwen2.5-coder:32b
+    litellm_params:
+      model: ollama/qwen2.5-coder:32b
+      api_base: http://localhost:11434
+    model_info:
+      description: "Powerful local coder, tool-use, 32k context."
+
+  - model_name: local/qwen3.6
+    litellm_params:
+      model: ollama/qwen3.6:latest
+      api_base: http://localhost:11434
+    model_info:
+      description: "36B MoE, 262k context, vision + tools + thinking. Best local general model."
+
+  - model_name: local/qwq:32b
+    litellm_params:
+      model: ollama/qwq:32b
+      api_base: http://localhost:11434
+    model_info:
+      description: "QwQ reasoning model, 32B, tool-use, 40k context."
+
+  - model_name: local/deepseek-r1:14b
+    litellm_params:
+      model: ollama/deepseek-r1:14b
+      api_base: http://localhost:11434
+    model_info:
+      description: "Compact DeepSeek reasoning, 131k context."
+
+  - model_name: local/deepseek-r1:32b
+    litellm_params:
+      model: ollama/deepseek-r1:32b
+      api_base: http://localhost:11434
+    model_info:
+      description: "DeepSeek R1 reasoning, 32B, 131k context."
+
+  - model_name: local/deepseek-r1:70b
+    litellm_params:
+      model: ollama/deepseek-r1:70b
+      api_base: http://localhost:11434
+    model_info:
+      description: "Best local reasoning model, 70B, 131k context."
+
+  - model_name: local/llama3.3:70b
+    litellm_params:
+      model: ollama/llama3.3:70b
+      api_base: http://localhost:11434
+    model_info:
+      description: "Llama 3.3 70B, tool-use, 131k context. Strong general model."
+
+  # ─── MID TIER — Cloudflare Workers AI via local proxy ─────────────────────
+  # Routes through scripts/local-mcp.py which adds anti-degeneracy retry logic
+  # and reasoning_effort:low for gpt-oss models. See commit 16995a0f.
+
+  - model_name: cf/gpt-oss-120b
+    litellm_params:
+      model: "openai/@cf/openai/gpt-oss-120b"
+      api_base: "os.environ/CF_API_BASE"
+      api_key: "os.environ/CF_API_KEY"
+      max_tokens: 16384                     # CF default is 256 — too low for tool-use chains.
+                                             # Raised 2026-06-11 (CB-7/CB roadmap): low max_tokens
+                                             # caused degenerate-empty (CB-1) responses; the spend
+                                             # review flag (local-mcp.py) now covers cost instead.
+      input_cost_per_token: 0.0000000053   # CF pricing: ~$5.30/M input tokens
+      output_cost_per_token: 0.0000000159  # ~$15.90/M output tokens
+    model_info:
+      description: "CF gpt-oss 120B via local proxy. Best serverless reasoning."
+
+  - model_name: cf/gpt-oss-20b
+    litellm_params:
+      model: "openai/@cf/openai/gpt-oss-20b"
+      api_base: "os.environ/CF_API_BASE"
+      api_key: "os.environ/CF_API_KEY"
+      max_tokens: 8192
+      input_cost_per_token: 0.0000000008   # ~$0.80/M input tokens
+      output_cost_per_token: 0.0000000024  # ~$2.40/M output tokens
+    model_info:
+      description: "CF gpt-oss 20B — fast, cheap serverless."
+
+  - model_name: cf/qwen2.5-coder:32b
+    litellm_params:
+      model: "openai/@cf/qwen/qwen2.5-coder-32b-instruct"
+      api_base: "os.environ/CF_API_BASE"
+      api_key: "os.environ/CF_API_KEY"
+      max_tokens: 8192
+      input_cost_per_token: 0.0000000002
+      output_cost_per_token: 0.0000000002
+    model_info:
+      description: "CF Qwen 2.5 Coder 32B — serverless coding, no GPU required locally."
+
+  - model_name: cf/llama3.3:70b
+    litellm_params:
+      model: "openai/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+      api_base: "os.environ/CF_API_BASE"
+      api_key: "os.environ/CF_API_KEY"
+      max_tokens: 8192
+      input_cost_per_token: 0.0000000003
+      output_cost_per_token: 0.0000000003
+    model_info:
+      description: "CF Llama 3.3 70B fp8-fast — serverless general, tool-use."
+
+  - model_name: cf/kimi-k2.6
+    litellm_params:
+      model: "openai/@cf/moonshotai/kimi-k2.6"
+      api_base: "os.environ/CF_API_BASE"
+      api_key: "os.environ/CF_API_KEY"
+      max_tokens: 25600                    # Raised from 8192 2026-06-11 -- test #10
+                                            # (cf-proxy-cheap-model-context-budget-roadmap.md)
+                                            # confirmed a complete, non-degenerate 9153-token
+                                            # completion at this budget (vs all-reasoning/zero-
+                                            # content at 8192 on the same prompt).
+      input_cost_per_token: 0.00000095     # CF pricing: $0.95/M input tokens
+      output_cost_per_token: 0.000004      # $4.00/M output tokens
+    model_info:
+      description: "Kimi K2.6 (1T-param MoE) via local proxy. Frontier-scale agentic coding/tool-use, 262k context. Strongest model in the mid tier."
+
+  - model_name: cf/gemma-4-26b
+    litellm_params:
+      model: "openai/@cf/google/gemma-4-26b-a4b-it"
+      api_base: "os.environ/CF_API_BASE"
+      api_key: "os.environ/CF_API_KEY"
+      max_tokens: 16384
+    model_info:
+      description: "Gemma 4 26B-A4B (MoE, 4B active) via local proxy. REJECTED as a Tier A candidate 2026-06-11 (test #8, see cf-proxy-cheap-model-context-budget-roadmap.md): degenerates to content:null/all-reasoning on a trivial 24-token prompt, with no observed size threshold to route around -- worse than gpt-oss-120b's (already-shrinking) CB-1 floor. Entry retained for any future re-test if CF changes serving defaults; do not add to Tier A's active rotation. CF bills this in Neurons, not $/token -- input_cost_per_token/output_cost_per_token deliberately omitted (unverified vs. CF community reports of incorrect Neuron pricing for this model); check ~/.litellm/costs.jsonl after first call before relying on cost tracking."
+
+  # ─── GROQ TIER — alternative host, testing 2026-06-11 ─────────────────────
+  # Direct Groq API (LPU hardware, OpenAI-compatible) — no local-mcp.py proxy
+  # needed. Hypothesis under test: CB-1 (degenerate-empty-response on
+  # cf/gpt-oss-* once prompt context is dense/large) is a CF Workers AI
+  # serving/Harmony-chat-template issue, not a model limitation. Groq
+  # co-developed gpt-oss serving with OpenAI and may apply the Harmony
+  # analysis/final channel split correctly where CF's generic OpenAI-compat
+  # wrapper does not. See foundation/SR-1.4-ai-guidance/docs/cf-proxy-cheap-
+  # model-context-budget-roadmap.md.
+
+  - model_name: groq/gpt-oss-120b
+    litellm_params:
+      model: "groq/openai/gpt-oss-120b"
+      api_key: "os.environ/GROQ_API_KEY"
+      max_tokens: 16384
+      input_cost_per_token: 0.00000015   # $0.15/M input (Groq, 2026-06)
+      output_cost_per_token: 0.0000006   # $0.60/M output
+    model_info:
+      description: "gpt-oss-120B via Groq (LPU). Same model as cf/gpt-oss-120b on a different serving stack -- isolates host/template vs model as the cause of CB-1. 131k context."
+
+  - model_name: groq/kimi-k2
+    litellm_params:
+      model: "groq/moonshotai/kimi-k2-instruct-0905"
+      api_key: "os.environ/GROQ_API_KEY"
+      max_tokens: 16384
+      input_cost_per_token: 0.000001     # $1.00/M input (Groq, 2026-06)
+      output_cost_per_token: 0.000003    # $3.00/M output
+    model_info:
+      description: "Kimi K2 0905 via Groq (LPU). 256k context, agentic tool-use. Compare against cf/kimi-k2.6."
+
+  # ─── DEEPSEEK TIER — direct API, testing 2026-06-11 ───────────────────────
+  # Direct DeepSeek API (OpenAI-compatible at api.deepseek.com). The
+  # `deepseek-chat` alias maps to V4 Flash non-thinking mode; it deprecates
+  # 2026-07-24 in favor of `deepseek-v4-flash` (functionally equivalent).
+
+  - model_name: deepseek/v4-flash
+    litellm_params:
+      model: "deepseek/deepseek-chat"
+      api_key: "os.environ/DEEPSEEK_API_KEY"
+      max_tokens: 16384
+      input_cost_per_token: 0.00000014   # $0.14/M input, cache-miss (2026-06)
+      output_cost_per_token: 0.00000028  # $0.28/M output
+    model_info:
+      description: "DeepSeek V4 Flash (deepseek-chat, non-thinking mode). 1M context, agentic coding. Cheapest frontier-class candidate under test."
+
+  # ─── FRONTIER TIER — Direct API calls ─────────────────────────────────────
+
+  - model_name: claude/sonnet-4
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+      input_cost_per_token: 0.000003     # $3/M input
+      output_cost_per_token: 0.000015    # $15/M output
+    model_info:
+      description: "Claude Sonnet 4.6 — best balance of capability and cost."
+
+  - model_name: claude/opus-4
+    litellm_params:
+      model: anthropic/claude-opus-4-8
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+      input_cost_per_token: 0.000015    # $15/M input
+      output_cost_per_token: 0.000075   # $75/M output
+    model_info:
+      description: "Claude Opus 4.8 — highest capability frontier model."
+
+  - model_name: openai/gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: "os.environ/OPENAI_API_KEY"
+    model_info:
+      description: "GPT-4o — OpenAI frontier, strong tool-use and vision."
+
+  - model_name: openai/o3
+    litellm_params:
+      model: openai/o3
+      api_key: "os.environ/OPENAI_API_KEY"
+    model_info:
+      description: "OpenAI o3 — strongest frontier reasoning model."
+
+
+# ─── LiteLLM settings ─────────────────────────────────────────────────────
+
+litellm_settings:
+  drop_params: true       # silently drop unknown params (e.g. reasoning_effort sent to Ollama)
+  json_logs: true         # structured JSON logs — pipe to file for spend analysis
+  # 10-minute timeout for large local model responses. Must stay above
+  # ORCHESTRATOR_DISPATCH_TIMEOUT_SECONDS=590 (scripts/local-mcp.py, CB-10(a))
+  # so local-mcp.py's own timeout fires first with a named, logged message.
+  request_timeout: 600
+  num_retries: 2          # retry on transient errors
+
+general_settings:
+  master_key: "os.environ/LITELLM_MASTER_KEY"   # bearer token for /ui dashboard
+  # store_model_in_db requires PostgreSQL — see scripts/README-litellm-db.md for setup

@@ -1,0 +1,30 @@
+services:
+  mcp-server:
+    build:
+      context: ./mcp-server
+    image: "{{IMAGE_NAME}}/mcp-server:{{TAG}}"
+    container_name: llm-toolkit-mcp-server
+    ports:
+      - "3100:3100"
+    environment:
+      WORKSPACE_ROOT: /workspace
+      CF_PROXY_OQ_LEDGER_PATH: "${CF_PROXY_OQ_LEDGER_PATH:-}"
+      CF_PROXY_USD_TO_AUD_RATE: "${CF_PROXY_USD_TO_AUD_RATE:-1.42}"
+      CF_PROXY_MONTHLY_BUDGET_AUD: "${CF_PROXY_MONTHLY_BUDGET_AUD:-100.00}"
+    volumes:
+      - ./workspace:/workspace
+    restart: unless-stopped
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: llm-toolkit-litellm
+    command: ["--config", "/etc/litellm/litellm_config.yaml", "--port", "4000"]
+    ports:
+      - "4000:4000"
+    env_file:
+      - ./docker/.env
+    volumes:
+      - ./mcp-server/litellm_config.yaml:/etc/litellm/litellm_config.yaml:ro
+    depends_on:
+      - mcp-server
+    restart: unless-stopped

@@ -1,0 +1,11 @@
+# Local development overrides -- copy or edit in place, not gitignored by
+# default since it contains no secrets (those live in docker/.env).
+#
+# Example: mount your actual project checkout read-write so the MCP server's
+# run_shell/read_file/write_file tools operate on it directly.
+services:
+  mcp-server:
+    volumes:
+      - ../:/workspace
+    environment:
+      CF_PROXY_OQ_LEDGER_PATH: architecture-docs/global/architect-open-questions.md

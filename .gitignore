@@ -1,0 +1,17 @@
+# Credentials -- never commit
+docker/.env
+mcp-server/litellm.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Node
+node_modules/
+
+# Orchestrator run state (local-only)
+.cf_proxy_orchestrator/
+
+# Editor
+.vscode/
