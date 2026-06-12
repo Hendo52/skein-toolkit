@@ -954,6 +954,14 @@ ORCHESTRATOR_OQ_LEDGER_PATH = os.environ.get(
     "CF_PROXY_OQ_LEDGER_PATH", "architecture-docs/global/architect-open-questions.md"
 )
 
+# Path (relative to WORKSPACE) to the consuming repo's AT (actionable task)
+# queue that create_actionable_task appends rows to. Same degradation story
+# as ORCHESTRATOR_OQ_LEDGER_PATH: _append_at_row logs and returns False
+# rather than raising if the path can't be read or written.
+AT_QUEUE_PATH = os.environ.get(
+    "CF_PROXY_AT_QUEUE_PATH", "architecture-docs/global/ai-task-queue.md"
+)
+
 # Number of automatic retries when a streamed response comes back fully empty
 # (no content, no tool_calls, finish_reason="stop") -- a known CF gpt-oss
 # degenerate-reasoning quirk where the model spends its whole turn in
@@ -1972,6 +1980,83 @@ def _append_oq_row(row: str) -> bool:
     return True
 
 
+_OQ_VALID_REVERSIBILITY = ("Reversible", "Irreversible")
+
+
+@mcp.tool()
+def create_open_question(
+    question: str,
+    options: list[str],
+    preemptive_answer: str,
+    preemptive_reasoning: str,
+    reversibility: str,
+    context_spec: str,
+    unblocks: str,
+    precedent_search_note: str,
+) -> str:
+    """Append a new row to the OQ ledger (ADR-011 Part 2 schema:
+    task-and-oq-authoring-standard.md). `question` is the fully-composed
+    Question cell content -- by this project's content-authoring policy
+    (oq-authoring-and-precedent-search-policy.md S6) it should already embed
+    the problem statement, lettered options, a held-loosely recommendation,
+    and the precedent-search note; the separate `options`/`preemptive_answer`/
+    `preemptive_reasoning`/`precedent_search_note`/`reversibility` fields are
+    validated here (per the Validator-at-the-Boundary policy) so a caller
+    cannot skip the ADR-011 authoring steps, even though they are not
+    re-rendered into a second copy inside the cell.
+
+    Returns "OQ-<N>" on success (the freshly-minted id, one greater than the
+    current live max per _next_oq_id). On a missing/invalid required field,
+    REJECTS -- returns an "ERROR: ..." string naming the field(s) and writes
+    nothing. On an I/O failure reading/writing the ledger, returns an
+    "ERROR: ..." string and writes nothing."""
+    errors: list[str] = []
+    if not question or not question.strip():
+        errors.append("question")
+    if not options or len(options) < 2:
+        errors.append("options (must be a list of at least 2 lettered options)")
+    if not preemptive_answer or not preemptive_answer.strip():
+        errors.append("preemptive_answer")
+    if not preemptive_reasoning or not preemptive_reasoning.strip():
+        errors.append("preemptive_reasoning")
+    if reversibility not in _OQ_VALID_REVERSIBILITY:
+        errors.append(f"reversibility (must be one of {_OQ_VALID_REVERSIBILITY})")
+    if not context_spec or not context_spec.strip():
+        errors.append("context_spec")
+    if not unblocks or not unblocks.strip():
+        errors.append("unblocks")
+    if not precedent_search_note or not precedent_search_note.strip():
+        errors.append("precedent_search_note")
+    if errors:
+        return f"ERROR: create_open_question rejected -- missing/invalid field(s): {', '.join(errors)}. No row written."
+
+    path = _resolve(ORCHESTRATOR_OQ_LEDGER_PATH)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            doc_text = f.read()
+    except Exception as e:
+        print(f"[cfproxy][oq] failed to read OQ doc to compute next id: {e}", file=sys.stderr)
+        return f"ERROR: could not read OQ ledger at {path}: {e}"
+    oq_id = _next_oq_id(doc_text)
+    row = _format_oq_row(oq_id, question, context_spec, unblocks, _today_utc())
+    if not _append_oq_row(row):
+        return "ERROR: failed to append OQ row -- see server log for details"
+    return f"OQ-{oq_id}"
+
+
+# Fixed A/B/C option labels for the bounded ambiguity-escalation path's OQ --
+# the full pros/cons for each are embedded in _format_step_ambiguity_oq's
+# "Options considered (S6.3)" section of the question cell; these short
+# labels exist only so _raise_step_ambiguity_oq can satisfy
+# create_open_question's >=2-lettered-options validation without duplicating
+# that prose a second time.
+_STEP_AMBIGUITY_OPTIONS = [
+    "(A) Treat as complete, continue the run.",
+    "(B) Treat as incomplete, halt the run.",
+    "(C) Re-slice this step.",
+]
+
+
 def _raise_step_ambiguity_oq(run_key: str, state: dict, step_idx: int, step_task: str, verdict_reason: str, summary_text: str) -> str:
     """Format and append the bounded, one-per-step ambiguity OQ; returns the OQ
     id string (e.g. "OQ-259") on success, or "" if the append failed (in which
@@ -1984,13 +2069,170 @@ def _raise_step_ambiguity_oq(run_key: str, state: dict, step_idx: int, step_task
     except Exception as e:
         print(f"[cfproxy][orchestrator] failed to read OQ doc to compute next id: {e}", file=sys.stderr)
         return ""
-    oq_id = _next_oq_id(doc_text)
     total = len(state["steps"])
-    question, context, unblocks, date = _format_step_ambiguity_oq(run_key, step_idx, total, step_task, verdict_reason, summary_text, doc_text)
-    row = _format_oq_row(oq_id, question, context, unblocks, date)
-    if not _append_oq_row(row):
-        return ""
-    return f"OQ-{oq_id}"
+    question, context, unblocks, _date = _format_step_ambiguity_oq(run_key, step_idx, total, step_task, verdict_reason, summary_text, doc_text)
+    result = create_open_question(
+        question=question,
+        options=list(_STEP_AMBIGUITY_OPTIONS),
+        preemptive_answer="No option is mechanically preferable -- see 'Recommendation, held loosely (S6.4)' embedded in the question cell.",
+        preemptive_reasoning="The deciding factor (what the actual diff on the touched paths shows) is only visible to a human inspecting the artifact, which is the entire point of escalating rather than guessing.",
+        reversibility="Reversible",
+        context_spec=context,
+        unblocks=unblocks,
+        precedent_search_note=_lightweight_oq_precedent_note(doc_text, step_task),
+    )
+    if result.startswith("OQ-"):
+        return result
+    print(f"[cfproxy][orchestrator] create_open_question failed: {result}", file=sys.stderr)
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# create_actionable_task -- ADR-011 Part 1 AT (Actionable Task) creation
+# ---------------------------------------------------------------------------
+
+_AT_VALID_STATES = ("Ready", "Blocked", "In Progress", "Done", "Decomposed")
+
+_AT_READY_POOL_HEADING_PREFIX = "## Ready Pool"
+
+_AT_INTAKE_HEADING = "### Newly Decomposed Tasks (Intake)"
+
+_AT_INTAKE_INTRO = (
+    "> New AT rows created via the `create_actionable_task` MCP tool (AT-1138) land here for "
+    "triage -- review/add `Agent:`/`Model:` annotations and dependencies, then relocate each "
+    "row into its appropriate lane.\n"
+)
+
+_AT_TABLE_HEADER = "| ID | Task | Spec / Issue | Exit Evidence | Effort | Depends On |\n"
+_AT_TABLE_SEP = "|----|------|-------------|---------------|--------|------------|\n"
+
+
+def _next_at_id(queue_text: str) -> int:
+    """Pick the next free AT id: the highest AT-<N> referenced anywhere in
+    ai-task-queue.md, plus 1. `.N` subtask suffixes (e.g. AT-1146.2) are
+    ignored -- the regex captures only the base number before any '.'."""
+    ids = [int(m) for m in re.findall(r"AT-(\d+)", queue_text)]
+    return (max(ids) if ids else 0) + 1
+
+
+def _format_at_row(at_id: int, description: str, spec_issue: str, dependencies: str,
+                    exit_evidence: str, effort: str, state: str) -> str:
+    task_cell = f"**{description}**"
+    if state != "Ready":
+        task_cell = f"**{state}** -- {task_cell}"
+    return f"| AT-{at_id} | {task_cell} | {spec_issue} | {exit_evidence} | {effort} | {dependencies} |\n"
+
+
+def _append_at_row(row: str) -> bool:
+    """Append a freshly-formatted AT row to the `### Newly Decomposed Tasks
+    (Intake)` subsection at the top of `## Ready Pool ...`, creating that
+    subsection (with its own table) if it doesn't exist yet. New rows go
+    directly below the subsection's table header separator (newest first,
+    matching _append_oq_row's convention for the OQ ledger). Returns False
+    (and logs) if the insertion point can't be found -- the caller must not
+    silently lose an AT it believes it created."""
+    path = _resolve(AT_QUEUE_PATH)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception as e:
+        print(f"[cfproxy][taskqueue] failed to read AT queue to append a row: {e}", file=sys.stderr)
+        return False
+
+    for i, line in enumerate(lines):
+        if line.rstrip("\n") == _AT_INTAKE_HEADING:
+            for j in range(i + 1, len(lines)):
+                if lines[j].startswith("## ") or lines[j].startswith("### "):
+                    print("[cfproxy][taskqueue] Intake subsection has no table separator before the next heading -- refusing to guess", file=sys.stderr)
+                    return False
+                stripped = lines[j].lstrip()
+                if stripped.startswith("|---") or stripped.startswith("|----") or stripped.startswith("| ---"):
+                    lines.insert(j + 1, row)
+                    break
+            else:
+                print("[cfproxy][taskqueue] Intake subsection has no table separator -- refusing to guess", file=sys.stderr)
+                return False
+            break
+    else:
+        for i, line in enumerate(lines):
+            if line.startswith(_AT_READY_POOL_HEADING_PREFIX):
+                lines[i + 1:i + 1] = [
+                    "\n",
+                    _AT_INTAKE_HEADING + "\n",
+                    "\n",
+                    _AT_INTAKE_INTRO,
+                    "\n",
+                    _AT_TABLE_HEADER,
+                    _AT_TABLE_SEP,
+                    row,
+                    "\n",
+                ]
+                break
+        else:
+            print(f"[cfproxy][taskqueue] AT queue has no '{_AT_READY_POOL_HEADING_PREFIX}' heading -- refusing to guess where to insert", file=sys.stderr)
+            return False
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+    except Exception as e:
+        print(f"[cfproxy][taskqueue] failed to write AT queue after appending a row: {e}", file=sys.stderr)
+        return False
+    return True
+
+
+@mcp.tool()
+def create_actionable_task(
+    description: str,
+    spec_issue: str,
+    dependencies: str,
+    exit_evidence: str,
+    effort: str,
+    state: str = "Ready",
+) -> str:
+    """Append a new row to the AT queue's "Newly Decomposed Tasks (Intake)"
+    subsection (ADR-011 Part 1 schema: task-and-oq-authoring-standard.md).
+
+    `description` is one imperative sentence naming a single deliverable.
+    `dependencies` is a comma-separated list of AT IDs that must be Done
+    first, or the literal string "None". `state` defaults to "Ready" and
+    must be one of Ready/Blocked/In Progress/Done/Decomposed; non-"Ready"
+    states are rendered as a "**<state>** -- " prefix on the Task cell.
+
+    Returns "AT-<N>" on success (the freshly-minted id, one greater than the
+    current max AT-<N> anywhere in the queue, ignoring .N subtask suffixes).
+    On a missing/invalid required field, REJECTS -- returns an "ERROR: ..."
+    string naming the field(s) and writes nothing. On an I/O failure
+    reading/writing the queue, returns an "ERROR: ..." string and writes
+    nothing."""
+    errors: list[str] = []
+    if not description or not description.strip():
+        errors.append("description")
+    if not spec_issue or not spec_issue.strip():
+        errors.append("spec_issue")
+    if not dependencies or not dependencies.strip():
+        errors.append("dependencies")
+    if not exit_evidence or not exit_evidence.strip():
+        errors.append("exit_evidence")
+    if not effort or not effort.strip():
+        errors.append("effort")
+    if state not in _AT_VALID_STATES:
+        errors.append(f"state (must be one of {_AT_VALID_STATES})")
+    if errors:
+        return f"ERROR: create_actionable_task rejected -- missing/invalid field(s): {', '.join(errors)}. No row written."
+
+    path = _resolve(AT_QUEUE_PATH)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            queue_text = f.read()
+    except Exception as e:
+        print(f"[cfproxy][taskqueue] failed to read AT queue to compute next id: {e}", file=sys.stderr)
+        return f"ERROR: could not read AT queue at {path}: {e}"
+    at_id = _next_at_id(queue_text)
+    row = _format_at_row(at_id, description, spec_issue, dependencies, exit_evidence, effort, state)
+    if not _append_at_row(row):
+        return "ERROR: failed to append AT row -- see server log for details"
+    return f"AT-{at_id}"
 
 
 _ORCHESTRATOR_STEP_SYSTEM_PROMPT = (
