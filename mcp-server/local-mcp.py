@@ -592,6 +592,36 @@ def _make_tool_call(name: str, args: dict) -> dict:
     }
 
 
+# Graceful-stop tool calls for the orchestrator's terminal synthetic
+# responses (run complete, halted, paused for OQ). A plain-text,
+# no-tool-call assistant turn (finish_reason: "stop") is accepted as "done"
+# by Cline's one-shot CLI (the process simply exits) but NOT by Cline's
+# interactive task loop (VS Code extension), which requires either a tool
+# call or attempt_completion/ask_followup_question on every turn. A bare
+# "stop" there gets "[ERROR] You did not use a tool in your previous
+# response!", and after 5 such retries Cline's own "[YOLO MODE] Task failed:
+# Too many consecutive mistakes" safety net fires, leaving the task on an
+# unresolved `ask: resume_task` -- a failure state invisible to
+# ~/.cf_proxy_orchestrator/*.json (observed 2026-06-13). Wrapping these
+# terminal messages in attempt_completion/ask_followup_question makes them
+# harness-compliant for both consumers.
+def _terminal_completion_tool_call(text: str) -> list:
+    """For run-complete / halted / failed messages: tell Cline the task (or
+    this orchestrated portion of it) is finished, presenting `text` as the
+    result."""
+    return [_make_tool_call("attempt_completion", {"result": text})]
+
+
+def _terminal_followup_question_tool_call(text: str) -> list:
+    """For the paused_for_oq ambiguity pause: ask Cline's harness to pause and
+    wait for the architect's reply (continue/stop), matching the
+    orchestrator's own paused_for_oq semantics."""
+    return [_make_tool_call("ask_followup_question", {
+        "question": text,
+        "options": json.dumps(["continue", "stop"]),
+    })]
+
+
 # Matches the START of a `{"name": "...", "arguments"/"parameters": ...}` blob
 # ANYWHERE in text -- deliberately not anchored, unlike _TOOLS_RE / Format-2 in
 # _parse_any_tool_call (which only fire when the call is cleanly isolated).
@@ -1313,6 +1343,41 @@ def _latest_user_message(body: dict) -> str:
             if isinstance(content, list):
                 return " ".join(c.get("text", "") for c in content if isinstance(c, dict))
     return ""
+
+
+def _conversation_has_tool_use(messages: list) -> bool:
+    """True if any assistant message in `messages` already contains a tool
+    call -- i.e. Cline is mid-task and the "latest user message" is tool-result
+    feedback from its own previous turn, not a fresh ask.
+
+    Guards the Phase 2 multi-step interceptor (_detect_multi_step_ask), which
+    runs on _latest_user_message: re-decomposing a tool-result blob as if it
+    were a new multi-part request spins up a spurious orchestrator run keyed
+    off that blob. Observed 2026-06-13 (run `bdeaa11e30a35d7a`): a 6218-char
+    tool-result happened to contain >= 3 tracked action verbs, so the
+    interceptor fired; the planner pass, given that blob, correctly found no
+    real task and returned a single degenerate step ("Provide a concrete task
+    or user request to decompose into steps."), which got auto-confirmed and
+    dispatched. Cline's real, unrelated, in-progress task kept making real
+    edits, so the validator scored that step YES and the run "completed" --
+    injecting a "Run complete... nothing further needed" turn into Cline's
+    actual in-progress task. Cline's interactive harness does not accept a
+    no-tool-call turn as done (see _terminal_completion_tool_call), replied
+    "[ERROR] You did not use a tool in your previous response!", and after 5
+    such retries hit its own "[YOLO MODE] Task failed: Too many consecutive
+    mistakes" stop -- a failure state visible only in that VS Code task's own
+    ui_messages.json, invisible to ~/.cf_proxy_orchestrator/*.json."""
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        if msg.get("tool_calls"):
+            return True
+        content = msg.get("content")
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_use" for b in content
+        ):
+            return True
+    return False
 
 
 def _detect_multi_step_ask(message: str) -> tuple[bool, str]:
@@ -2494,7 +2559,8 @@ async def _finish_step(key: str, state: dict, step_idx: int, summary_text: str, 
             await _record_metric("orchestrator_run_completed")
             _orchestrator_log(state, f"step {step_idx}/{total} validated YES -- run complete ({total}/{total})")
             _save_orchestrator_state(key, state)
-            return _synthetic_assistant_response(model_name, _format_run_complete(key, total), is_stream)
+            return _synthetic_assistant_response(
+                model_name, "", is_stream, tool_calls=_terminal_completion_tool_call(_format_run_complete(key, total)))
         # Auto-advance: the next step's tail begins empty, right after whatever
         # is currently the last message in this request's history -- so THAT
         # index is the new anchor (mirrors how the confirm-branch anchors on
@@ -2514,7 +2580,9 @@ async def _finish_step(key: str, state: dict, step_idx: int, summary_text: str, 
         await _record_metric("orchestrator_run_halted")
         _save_orchestrator_state(key, state)
         return _synthetic_assistant_response(
-            model_name, _format_step_failure_report(step_idx, total, step_task, changed, summary_text, reason), is_stream)
+            model_name, "", is_stream,
+            tool_calls=_terminal_completion_tool_call(
+                _format_step_failure_report(step_idx, total, step_task, changed, summary_text, reason)))
 
     # verdict == "ambiguous" -- Stage 3's bounded, one-shot OQ escalation.
     if state.get("ambiguity_raised_for_step") == step_idx:
@@ -2523,13 +2591,13 @@ async def _finish_step(key: str, state: dict, step_idx: int, summary_text: str, 
         _orchestrator_log(state, f"step {step_idx}/{total} is AMBIGUOUS again after an OQ was already raised for it -- hard stop, no second OQ (loop-detector)")
         _save_orchestrator_state(key, state)
         return _synthetic_assistant_response(
-            model_name,
-            f"[cfproxy][orchestrator] Step {step_idx}/{total} came back AMBIGUOUS a second time -- an OQ "
-            f"was already raised for it (`ambiguity_raised_for_step={step_idx}` in the run's state file). "
-            f"Per the bounded loop-detector this is a hard stop, not a second OQ: unbounded clarification "
-            f"ping-pong is the exact $47K-postmortem failure mode that cap exists to prevent. The run is "
-            f"halted -- resolve the existing OQ and re-confirm a corrected breakdown manually when ready.",
-            is_stream)
+            model_name, "", is_stream,
+            tool_calls=_terminal_completion_tool_call(
+                f"[cfproxy][orchestrator] Step {step_idx}/{total} came back AMBIGUOUS a second time -- an OQ "
+                f"was already raised for it (`ambiguity_raised_for_step={step_idx}` in the run's state file). "
+                f"Per the bounded loop-detector this is a hard stop, not a second OQ: unbounded clarification "
+                f"ping-pong is the exact $47K-postmortem failure mode that cap exists to prevent. The run is "
+                f"halted -- resolve the existing OQ and re-confirm a corrected breakdown manually when ready."))
 
     oq_id = _raise_step_ambiguity_oq(key, state, step_idx, step_task, reason, summary_text)
     if oq_id:
@@ -2542,7 +2610,9 @@ async def _finish_step(key: str, state: dict, step_idx: int, summary_text: str, 
     _orchestrator_log(state, f"step {step_idx}/{total} is AMBIGUOUS -- raised {oq_id or '(OQ append failed)'} and paused pending the architect's call")
     _save_orchestrator_state(key, state)
     return _synthetic_assistant_response(
-        model_name, _format_step_ambiguity_pause(step_idx, total, step_task, changed, summary_text, reason, oq_id), is_stream)
+        model_name, "", is_stream,
+        tool_calls=_terminal_followup_question_tool_call(
+            _format_step_ambiguity_pause(step_idx, total, step_task, changed, summary_text, reason, oq_id)))
 
 
 # CB-14 (2026-06-12): tool names whose Cline-side handler ENDS the CLI
@@ -2608,10 +2678,10 @@ async def _dispatch_step(key: str, state: dict, step_idx: int, cf_url: str, auth
         _orchestrator_log(state, f"step {step_idx}/{total} dispatch failed (transport/parse error) -- halting; no further steps will auto-run")
         _save_orchestrator_state(key, state)
         return _synthetic_assistant_response(
-            model_name,
-            f"[cfproxy][orchestrator] Lost contact with the model mid-step {step_idx}/{total} -- halting the run here. "
-            f"Anything it had already changed is still on disk (`git status` to see it). Re-send your last message to retry.",
-            is_stream)
+            model_name, "", is_stream,
+            tool_calls=_terminal_completion_tool_call(
+                f"[cfproxy][orchestrator] Lost contact with the model mid-step {step_idx}/{total} -- halting the run here. "
+                f"Anything it had already changed is still on disk (`git status` to see it). Re-send your last message to retry."))
     content, tool_calls, _finish_reason = result
     if tool_calls:
         terminal_summary = _cline_terminal_tool_summary(tool_calls, content)
@@ -2669,7 +2739,8 @@ async def _handle_orchestrated_request(cf_url: str, auth_header: str, body: dict
             state["status"] = "complete"
             await _record_metric("orchestrator_run_completed")
             _save_orchestrator_state(key, state)
-            return _synthetic_assistant_response(model_name, _format_run_complete(key, total), is_stream)
+            return _synthetic_assistant_response(
+                model_name, "", is_stream, tool_calls=_terminal_completion_tool_call(_format_run_complete(key, total)))
         state.update(status="running", current=next_idx, anchor_index=last_user_idx,
                      snapshot_before_step=await _git_snapshot(WORKSPACE))
         _orchestrator_log(state, f"dispatching step {next_idx}/{total}: {state['steps'][next_idx - 1]!r}")
@@ -2699,7 +2770,8 @@ async def _handle_orchestrated_request(cf_url: str, auth_header: str, body: dict
                 state["status"] = "complete"
                 await _record_metric("orchestrator_run_completed")
                 _save_orchestrator_state(key, state)
-                return _synthetic_assistant_response(model_name, _format_run_complete(key, total), is_stream)
+                return _synthetic_assistant_response(
+                    model_name, "", is_stream, tool_calls=_terminal_completion_tool_call(_format_run_complete(key, total)))
             state.update(status="running", current=next_idx, anchor_index=last_user_idx,
                          snapshot_before_step=await _git_snapshot(WORKSPACE))
             _orchestrator_log(state, f"dispatching step {next_idx}/{total}: {state['steps'][next_idx - 1]!r}")
@@ -2896,7 +2968,7 @@ async def _cf_proxy(request: StarletteRequest):
     # git snapshots, automatic YES/NO/AMBIGUOUS validation, the bounded
     # ambiguity-OQ escalation, the step cap, and the daily spend cap -- none of
     # which require a human reply to function.
-    if isinstance(body.get("messages"), list):
+    if isinstance(body.get("messages"), list) and not _conversation_has_tool_use(body["messages"]):
         messages = body["messages"]
         user_message = _latest_user_message(body)
         is_multi_step, reason = _detect_multi_step_ask(user_message)
