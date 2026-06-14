@@ -16,7 +16,17 @@ param(
 
     [int]$TimeoutSec = 600,
 
-    [switch]$AutoApprove
+    [switch]$AutoApprove,
+
+    # AT-1158/Lane-111 dispatch (2026-06-15): skein-toolkit is a separate git
+    # repo nested inside Electron-Splines (`git -C skein-toolkit rev-parse
+    # --show-toplevel` != Electron-Splines root). The default below preserves
+    # the original behavior (Cline's cwd = skein-toolkit root) for
+    # skein-toolkit-internal tasks. For tasks against the main Electron-Splines
+    # tree (app/src, foundation/, editor/, architecture-docs/), pass
+    # -RepoRoot pointing at the Electron-Splines checkout so Cline's relative
+    # paths and git commits land in the right repo.
+    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot)
 )
 
 $ErrorActionPreference = "Stop"
@@ -91,13 +101,14 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 # process.cwd() is $env:USERPROFILE too, and Cline resolves the task's
 # relative file paths (e.g. "foundation/SR-1.4-ai-guidance/docs/...") against
 # that -- writing to C:\Users\<user>\foundation\... instead of the repo. Pin
-# the working directory to this script's repo root so cline's relative paths
-# always resolve against the repo regardless of the caller's cwd.
-$repoRoot = Split-Path -Parent $PSScriptRoot
+# the working directory to -RepoRoot (default: this script's own repo,
+# skein-toolkit -- pass a different -RepoRoot for tasks against the main
+# Electron-Splines tree, see param block above) so cline's relative paths
+# always resolve against the intended repo regardless of the caller's cwd.
 $proc = Start-Process -FilePath "cmd.exe" `
     -ArgumentList "/c", "npx cline -P openai-compatible -m `"$Model`" $approveFlag" `
     -RedirectStandardInput $taskFile `
-    -WorkingDirectory $repoRoot `
+    -WorkingDirectory $RepoRoot `
     -NoNewWindow -PassThru
 
 $finished = $proc.WaitForExit($TimeoutSec * 1000)
