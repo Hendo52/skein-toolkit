@@ -13,6 +13,7 @@ import importlib.util
 import os
 import tempfile
 import unittest
+import unittest.mock
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _MODULE_PATH = os.path.normpath(os.path.join(_THIS_DIR, "..", "local-mcp.py"))
@@ -56,6 +57,33 @@ _AT_QUEUE_WITHOUT_INTAKE = """# AI Task Queue
 """
 
 
+def _valid_oq_kwargs(**overrides):
+    kwargs = dict(
+        question="**[TEST] Some question?**",
+        options=["(A) Do this.", "(B) Do that."],
+        preemptive_answer="(A) Do this.",
+        preemptive_reasoning="Because of reasons.",
+        reversibility="Reversible",
+        context_spec="Some context",
+        unblocks="Some unblock",
+        precedent_search_note="No precedent search performed.",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def _valid_at_kwargs(**overrides):
+    kwargs = dict(
+        description="Do the new thing",
+        spec_issue="SR-1.12",
+        dependencies="None",
+        exit_evidence="The thing is done",
+        effort="Small",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
 class _LedgerTestCase(unittest.TestCase):
     """Base class: points local_mcp's path resolution at a scratch temp dir
     and writes the given OQ/AT file contents, restoring the originals on
@@ -72,10 +100,18 @@ class _LedgerTestCase(unittest.TestCase):
         self._tmpdir = tempfile.mkdtemp()
         self._orig_oq_path = local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH
         self._orig_at_path = local_mcp.AT_QUEUE_PATH
+        self._orig_odysseus_url = local_mcp.ODYSSEUS_API_URL
+        self._orig_odysseus_token = local_mcp.ODYSSEUS_API_TOKEN
+        # Markdown-ledger mode is the default under test; Odysseus-Notes mode
+        # (AT-1153) is exercised explicitly by TestOdysseusNotesMode below.
+        local_mcp.ODYSSEUS_API_URL = ""
+        local_mcp.ODYSSEUS_API_TOKEN = ""
 
     def tearDown(self):
         local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = self._orig_oq_path
         local_mcp.AT_QUEUE_PATH = self._orig_at_path
+        local_mcp.ODYSSEUS_API_URL = self._orig_odysseus_url
+        local_mcp.ODYSSEUS_API_TOKEN = self._orig_odysseus_token
 
 
 class TestNextOqId(unittest.TestCase):
@@ -89,18 +125,7 @@ class TestNextOqId(unittest.TestCase):
 
 class TestCreateOpenQuestion(_LedgerTestCase):
     def _valid_kwargs(self, **overrides):
-        kwargs = dict(
-            question="**[TEST] Some question?**",
-            options=["(A) Do this.", "(B) Do that."],
-            preemptive_answer="(A) Do this.",
-            preemptive_reasoning="Because of reasons.",
-            reversibility="Reversible",
-            context_spec="Some context",
-            unblocks="Some unblock",
-            precedent_search_note="No precedent search performed.",
-        )
-        kwargs.update(overrides)
-        return kwargs
+        return _valid_oq_kwargs(**overrides)
 
     def test_rejects_missing_question(self):
         local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = self._write_ledger(_OQ_DOC_TEMPLATE, ".md")
@@ -170,15 +195,7 @@ class TestFormatAtRow(unittest.TestCase):
 
 class TestCreateActionableTask(_LedgerTestCase):
     def _valid_kwargs(self, **overrides):
-        kwargs = dict(
-            description="Do the new thing",
-            spec_issue="SR-1.12",
-            dependencies="None",
-            exit_evidence="The thing is done",
-            effort="Small",
-        )
-        kwargs.update(overrides)
-        return kwargs
+        return _valid_at_kwargs(**overrides)
 
     def test_rejects_missing_description(self):
         local_mcp.AT_QUEUE_PATH = self._write_ledger(_AT_QUEUE_WITHOUT_INTAKE, ".md")
@@ -221,6 +238,97 @@ class TestCreateActionableTask(_LedgerTestCase):
     def test_io_failure_returns_error_for_missing_queue(self):
         local_mcp.AT_QUEUE_PATH = os.path.join(tempfile.mkdtemp(), "does-not-exist.md")
         result = local_mcp.create_actionable_task(**self._valid_kwargs())
+        self.assertTrue(result.startswith("ERROR:"))
+
+
+class TestOdysseusNotesMode(_LedgerTestCase):
+    """AT-1153: the Odysseus-Notes alternative mode for
+    create_open_question/create_actionable_task, gated on
+    ODYSSEUS_API_URL/ODYSSEUS_API_TOKEN reachability."""
+
+    def test_inactive_when_env_vars_unset(self):
+        # _LedgerTestCase.setUp leaves both env vars as "".
+        self.assertFalse(local_mcp._odysseus_notes_mode_active())
+
+    def test_inactive_on_reachability_check_connection_error(self):
+        local_mcp.ODYSSEUS_API_URL = "https://odysseus.example"
+        local_mcp.ODYSSEUS_API_TOKEN = "test-token"
+        with unittest.mock.patch.object(local_mcp.httpx, "get", side_effect=Exception("connection refused")):
+            self.assertFalse(local_mcp._odysseus_notes_mode_active())
+
+    def test_inactive_on_non_200_reachability_response(self):
+        local_mcp.ODYSSEUS_API_URL = "https://odysseus.example"
+        local_mcp.ODYSSEUS_API_TOKEN = "test-token"
+        fake_resp = unittest.mock.MagicMock(status_code=401)
+        with unittest.mock.patch.object(local_mcp.httpx, "get", return_value=fake_resp):
+            self.assertFalse(local_mcp._odysseus_notes_mode_active())
+
+    def test_active_when_notes_endpoint_authenticates(self):
+        local_mcp.ODYSSEUS_API_URL = "https://odysseus.example"
+        local_mcp.ODYSSEUS_API_TOKEN = "test-token"
+        fake_resp = unittest.mock.MagicMock(status_code=200)
+        with unittest.mock.patch.object(local_mcp.httpx, "get", return_value=fake_resp):
+            self.assertTrue(local_mcp._odysseus_notes_mode_active())
+
+    def test_create_open_question_writes_odysseus_note_and_skips_ledger(self):
+        local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = self._write_ledger(_OQ_DOC_TEMPLATE, ".md")
+        before = open(local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH, encoding="utf-8").read()
+        local_mcp.ODYSSEUS_API_URL = "https://odysseus.example"
+        local_mcp.ODYSSEUS_API_TOKEN = "test-token"
+        fake_get_resp = unittest.mock.MagicMock(status_code=200)
+        fake_post_resp = unittest.mock.MagicMock(status_code=201)
+        fake_post_resp.json.return_value = {"id": 42}
+        fake_post_resp.raise_for_status.return_value = None
+        with unittest.mock.patch.object(local_mcp.httpx, "get", return_value=fake_get_resp), \
+                unittest.mock.patch.object(local_mcp.httpx, "post", return_value=fake_post_resp) as mock_post:
+            result = local_mcp.create_open_question(**_valid_oq_kwargs())
+        self.assertEqual(result, "OQ-odysseus-42")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["note_type"], "checklist")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["label"], "OQ")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["source"], "agent")
+        after = open(local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH, encoding="utf-8").read()
+        self.assertEqual(before, after)
+
+    def test_create_open_question_odysseus_post_failure_returns_error(self):
+        local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = self._write_ledger(_OQ_DOC_TEMPLATE, ".md")
+        local_mcp.ODYSSEUS_API_URL = "https://odysseus.example"
+        local_mcp.ODYSSEUS_API_TOKEN = "test-token"
+        fake_get_resp = unittest.mock.MagicMock(status_code=200)
+        with unittest.mock.patch.object(local_mcp.httpx, "get", return_value=fake_get_resp), \
+                unittest.mock.patch.object(local_mcp.httpx, "post", side_effect=Exception("503 Service Unavailable")):
+            result = local_mcp.create_open_question(**_valid_oq_kwargs())
+        self.assertTrue(result.startswith("ERROR:"))
+
+    def test_create_actionable_task_writes_odysseus_note_and_skips_queue(self):
+        local_mcp.AT_QUEUE_PATH = self._write_ledger(_AT_QUEUE_WITHOUT_INTAKE, ".md")
+        before = open(local_mcp.AT_QUEUE_PATH, encoding="utf-8").read()
+        local_mcp.ODYSSEUS_API_URL = "https://odysseus.example"
+        local_mcp.ODYSSEUS_API_TOKEN = "test-token"
+        fake_get_resp = unittest.mock.MagicMock(status_code=200)
+        fake_post_resp = unittest.mock.MagicMock(status_code=201)
+        fake_post_resp.json.return_value = {"id": 7}
+        fake_post_resp.raise_for_status.return_value = None
+        with unittest.mock.patch.object(local_mcp.httpx, "get", return_value=fake_get_resp), \
+                unittest.mock.patch.object(local_mcp.httpx, "post", return_value=fake_post_resp) as mock_post:
+            result = local_mcp.create_actionable_task(**_valid_at_kwargs())
+        self.assertEqual(result, "AT-odysseus-7")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["note_type"], "checklist")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["label"], "AT")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["source"], "agent")
+        after = open(local_mcp.AT_QUEUE_PATH, encoding="utf-8").read()
+        self.assertEqual(before, after)
+
+    def test_create_actionable_task_odysseus_missing_id_returns_error(self):
+        local_mcp.AT_QUEUE_PATH = self._write_ledger(_AT_QUEUE_WITHOUT_INTAKE, ".md")
+        local_mcp.ODYSSEUS_API_URL = "https://odysseus.example"
+        local_mcp.ODYSSEUS_API_TOKEN = "test-token"
+        fake_get_resp = unittest.mock.MagicMock(status_code=200)
+        fake_post_resp = unittest.mock.MagicMock(status_code=201)
+        fake_post_resp.json.return_value = {"title": "no id field"}
+        fake_post_resp.raise_for_status.return_value = None
+        with unittest.mock.patch.object(local_mcp.httpx, "get", return_value=fake_get_resp), \
+                unittest.mock.patch.object(local_mcp.httpx, "post", return_value=fake_post_resp):
+            result = local_mcp.create_actionable_task(**_valid_at_kwargs())
         self.assertTrue(result.startswith("ERROR:"))
 
 

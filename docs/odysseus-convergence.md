@@ -205,6 +205,49 @@ forward direction (skein-toolkit contributing to Odysseus).
    observable) per this repo's First-Class Scenarios policy. Depends on
    AT-1137-1139, AT-1152.
 
+   **Design sketch, 2026-06-13 (research only, not yet implemented):**
+   Odysseus's `core/database.py` `Note` model (`notes` table, exposed via
+   `POST /api/notes` in `routes/note_routes.py`) is a Google-Keep-style
+   note/checklist with fields that map directly onto an OQ/AT row without any
+   Odysseus-side schema change: `note_type` (`"note"` or `"checklist"`),
+   `label` (free-text tag), `source` (`"user"` or `"agent"`), `items` (JSON
+   `[{text, done}]`), `title`, `content`. The proposed Odysseus-native mode
+   would `POST /api/notes` with `source="agent"`, `label="OQ"` or `label="AT"`,
+   `note_type="checklist"`, and `items`/`content` carrying the same ADR-011
+   Part 1/2 fields the markdown-table appenders currently format into rows --
+   `GET /api/notes?label=OQ` (or `AT`) becomes the Odysseus-native equivalent
+   of "read the Open Questions table" / "read the Ready Pool". Authentication
+   would use Odysseus's existing `ApiToken` bearer-token mechanism
+   (`routes/api_token_routes.py`) -- "Odysseus environment detected" means
+   `ODYSSEUS_API_URL` + `ODYSSEUS_API_TOKEN` are set and `GET
+   {ODYSSEUS_API_URL}/api/notes` authenticates successfully. This requires
+   **zero changes to Odysseus** (existing REST API only), consistent with
+   AT-1152's "no/minimal changes" finding and the Apache-2.0 -> AGPL-3.0
+   convergence direction (skein-toolkit calls Odysseus's API as a client; no
+   AGPL code needs to be vendored into skein-toolkit). Open design question
+   for whoever picks up implementation: ID allocation (`OQ-<N>`/`AT-<N>`)
+   currently comes from scanning a markdown table's existing IDs
+   (`_next_oq_id`/`_next_at_id`); in Notes-backed mode this would instead mean
+   `GET /api/notes?label=OQ` and computing max+1 from titles/content, or
+   switching to UUID-based IDs for this mode (a behavior difference that
+   should be raised as its own OQ when implementation starts, since it affects
+   how the two modes' outputs are cross-referenced).
+
+   **Implemented, 2026-06-15 (AT-1153 done):** `mcp-server/local-mcp.py` gains
+   `ODYSSEUS_API_URL`/`ODYSSEUS_API_TOKEN` config constants,
+   `_odysseus_notes_mode_active()` (the reachability gate above, returning
+   `False` -- and logging to stderr -- on unset env vars, connection error, or
+   non-200), and `_odysseus_create_note(label, title, content, items)`
+   (`POST /api/notes` as sketched, returning `"<label>-odysseus-<id>"` or an
+   `"ERROR: ..."` string). `create_open_question`/`create_actionable_task`
+   branch on the reachability gate after their existing field validation;
+   both modes log which one is active to stderr. The ID-allocation open
+   question above was resolved as **OQ-269, Option B**:
+   `<label>-odysseus-<id>` using the Odysseus Note's own primary key directly
+   (no second counter, no UUIDs). 8 new tests in `TestOdysseusNotesMode`
+   (`mcp-server/tests/test_local_mcp_oq_at_tools.py`); full suite 99/99
+   passing.
+
 3. **AT-1154 (Small):** Read Odysseus's `CONTRIBUTING.md`/`ROADMAP.md` in
    full and document the actual PR process (CLA/DCO, design-issue-first
    norms, test expectations) in this file's "(b)" section, replacing the

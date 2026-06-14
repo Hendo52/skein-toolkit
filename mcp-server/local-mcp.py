@@ -992,6 +992,17 @@ AT_QUEUE_PATH = os.environ.get(
     "CF_PROXY_AT_QUEUE_PATH", "architecture-docs/global/ai-task-queue.md"
 )
 
+# Odysseus-Notes alternative mode (AT-1153): when ODYSSEUS_API_URL and
+# ODYSSEUS_API_TOKEN are both set and {ODYSSEUS_API_URL}/api/notes
+# authenticates with that token, create_open_question/create_actionable_task
+# write to a reachable Odysseus instance's Notes API (POST /api/notes)
+# instead of the markdown ledgers above. Both modes are first-class (named,
+# tested, observable via a stderr log line naming the active mode) per the
+# First-Class Scenarios policy -- see _odysseus_notes_mode_active and
+# docs/odysseus-convergence.md.
+ODYSSEUS_API_URL = os.environ.get("ODYSSEUS_API_URL", "").rstrip("/")
+ODYSSEUS_API_TOKEN = os.environ.get("ODYSSEUS_API_TOKEN", "")
+
 # Number of automatic retries when a streamed response comes back fully empty
 # (no content, no tool_calls, finish_reason="stop") -- a known CF gpt-oss
 # degenerate-reasoning quirk where the model spends its whole turn in
@@ -2048,6 +2059,64 @@ def _append_oq_row(row: str) -> bool:
 _OQ_VALID_REVERSIBILITY = ("Reversible", "Irreversible")
 
 
+def _odysseus_notes_mode_active() -> bool:
+    """True when ODYSSEUS_API_URL/ODYSSEUS_API_TOKEN are both set and
+    GET {ODYSSEUS_API_URL}/api/notes authenticates with the bearer token --
+    the AT-1153 reachability check. Any other outcome (env vars unset,
+    connection error, non-200 response) means the markdown-ledger mode stays
+    active; a failed reachability check is logged so the choice of mode is
+    always observable, not silent."""
+    if not ODYSSEUS_API_URL or not ODYSSEUS_API_TOKEN:
+        return False
+    try:
+        resp = httpx.get(
+            f"{ODYSSEUS_API_URL}/api/notes",
+            headers={"Authorization": f"Bearer {ODYSSEUS_API_TOKEN}"},
+            timeout=5.0,
+        )
+        return resp.status_code == 200
+    except Exception as e:
+        print(f"[cfproxy][odysseus] Notes-mode reachability check failed, using markdown ledger: {e}", file=sys.stderr)
+        return False
+
+
+def _odysseus_create_note(label: str, title: str, content: str, items: list[dict]) -> str:
+    """POST a new agent-authored checklist note (AT-1153 Odysseus-Notes
+    alternative mode) to a reachable Odysseus instance. Returns
+    "<label>-odysseus-<note_id>" on success -- the "-odysseus-" infix
+    disambiguates Notes-mode IDs (Odysseus's own Note primary key, an
+    independent ID space) from the markdown ledgers' OQ-<N>/AT-<N> sequences,
+    per OQ-269's preemptive answer. Returns an "ERROR: ..." string on any
+    failure (connection error, non-2xx response, or a response missing
+    'id'), writing nothing -- reject, don't substitute, per the
+    Validator-at-the-Boundary policy."""
+    try:
+        resp = httpx.post(
+            f"{ODYSSEUS_API_URL}/api/notes",
+            headers={"Authorization": f"Bearer {ODYSSEUS_API_TOKEN}"},
+            json={
+                "note_type": "checklist",
+                "label": label,
+                "source": "agent",
+                "title": title,
+                "content": content,
+                "items": items,
+            },
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        note = resp.json()
+    except Exception as e:
+        print(f"[cfproxy][odysseus] failed to create {label} note: {e}", file=sys.stderr)
+        return f"ERROR: failed to create Odysseus {label} note: {e}"
+    note_id = note.get("id")
+    if note_id is None:
+        print(f"[cfproxy][odysseus] {label} note created but response had no 'id': {note}", file=sys.stderr)
+        return f"ERROR: Odysseus {label} note created but response had no 'id': {note}"
+    print(f"[cfproxy][odysseus] {label}-odysseus-{note_id} created via Odysseus Notes mode (note_type=checklist, label={label})", file=sys.stderr)
+    return f"{label}-odysseus-{note_id}"
+
+
 @mcp.tool()
 def create_open_question(
     question: str,
@@ -2095,6 +2164,22 @@ def create_open_question(
     if errors:
         return f"ERROR: create_open_question rejected -- missing/invalid field(s): {', '.join(errors)}. No row written."
 
+    if _odysseus_notes_mode_active():
+        title = question.strip().splitlines()[0][:200]
+        content = "\n".join([
+            question,
+            "",
+            f"**Options:** {' / '.join(options)}",
+            f"**Preemptive answer:** {preemptive_answer}",
+            f"**Preemptive reasoning:** {preemptive_reasoning}",
+            f"**Reversibility:** {reversibility}",
+            f"**Context / Spec:** {context_spec}",
+            f"**Unblocks:** {unblocks}",
+            f"**Precedent search:** {precedent_search_note}",
+        ])
+        items = [{"text": opt, "done": False} for opt in options]
+        return _odysseus_create_note("OQ", title, content, items)
+
     path = _resolve(ORCHESTRATOR_OQ_LEDGER_PATH)
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -2106,6 +2191,7 @@ def create_open_question(
     row = _format_oq_row(oq_id, question, context_spec, unblocks, _today_utc())
     if not _append_oq_row(row):
         return "ERROR: failed to append OQ row -- see server log for details"
+    print(f"[cfproxy][oq] OQ-{oq_id} appended to markdown ledger {path} (Odysseus Notes mode inactive)", file=sys.stderr)
     return f"OQ-{oq_id}"
 
 
@@ -2286,6 +2372,23 @@ def create_actionable_task(
     if errors:
         return f"ERROR: create_actionable_task rejected -- missing/invalid field(s): {', '.join(errors)}. No row written."
 
+    if _odysseus_notes_mode_active():
+        task_cell = f"**{description}**"
+        if state != "Ready":
+            task_cell = f"**{state}** -- {task_cell}"
+        title = description.strip().splitlines()[0][:200]
+        content = "\n".join([
+            task_cell,
+            "",
+            f"**Spec / Issue:** {spec_issue}",
+            f"**Exit Evidence:** {exit_evidence}",
+            f"**Effort:** {effort}",
+            f"**Depends On:** {dependencies}",
+            f"**State:** {state}",
+        ])
+        items = [{"text": exit_evidence, "done": state == "Done"}]
+        return _odysseus_create_note("AT", title, content, items)
+
     path = _resolve(AT_QUEUE_PATH)
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -2297,6 +2400,7 @@ def create_actionable_task(
     row = _format_at_row(at_id, description, spec_issue, dependencies, exit_evidence, effort, state)
     if not _append_at_row(row):
         return "ERROR: failed to append AT row -- see server log for details"
+    print(f"[cfproxy][taskqueue] AT-{at_id} appended to markdown queue {path} (Odysseus Notes mode inactive)", file=sys.stderr)
     return f"AT-{at_id}"
 
 
