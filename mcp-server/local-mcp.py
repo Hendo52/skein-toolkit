@@ -3496,10 +3496,18 @@ def _get_server_commit_sha() -> str:
         return "unknown"
 
 
+# Computed once at import time (process start) and frozen for the process's
+# lifetime: this is "what commit was this running process loaded from", NOT
+# "what is HEAD right now" -- re-running git on every /health call would
+# always report the CURRENT working tree, making a stale in-memory process
+# look fresh and defeating the staleness check entirely.
+_SERVER_STARTUP_COMMIT_SHA = _get_server_commit_sha()
+
+
 async def _health(request: StarletteRequest) -> JSONResponse:
-    """AT-1142 / CB-15: reports the commit SHA of the running server's source
-    tree, used by toolchain-doctor.ps1 to detect a stale server process."""
-    return JSONResponse({"status": "ok", "commit": _get_server_commit_sha()})
+    """AT-1142 / CB-15: reports the commit SHA the running server process was
+    started from, used by toolchain-doctor.ps1 to detect a stale server."""
+    return JSONResponse({"status": "ok", "commit": _SERVER_STARTUP_COMMIT_SHA})
 
 
 if __name__ == "__main__":
@@ -3522,7 +3530,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     print(f"Local MCP server starting...")
-    print(f"  running from commit {_get_server_commit_sha()} ({_SERVER_REPO_ROOT})")
+    print(f"  running from commit {_SERVER_STARTUP_COMMIT_SHA} ({_SERVER_REPO_ROOT})")
     print(f"Workspace: {WORKSPACE}")
     print(f"Listening on http://127.0.0.1:3100/sse  (MCP tools)")
     print(f"CF proxy at   http://127.0.0.1:3100/cfproxy/{{account_id}}/v1")

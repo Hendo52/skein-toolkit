@@ -60,10 +60,14 @@ class TestHealthEndpoint(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         body = response.body.decode("utf-8")
         self.assertIn('"status":"ok"', body.replace(" ", ""))
-        self.assertIn(_get_server_commit_sha(), body)
+        # /health must report the SHA the process was STARTED with (frozen at
+        # import time), not whatever `git rev-parse HEAD` returns right now --
+        # otherwise a stale in-memory process would always self-report as
+        # "current" and the staleness check would be meaningless.
+        self.assertIn(local_mcp._SERVER_STARTUP_COMMIT_SHA, body)
 
     async def test_health_reports_unknown_when_sha_unavailable(self):
-        with patch.object(local_mcp, "_get_server_commit_sha", return_value="unknown"):
+        with patch.object(local_mcp, "_SERVER_STARTUP_COMMIT_SHA", "unknown"):
             response = await _health(request=None)
         body = response.body.decode("utf-8")
         self.assertIn('"commit":"unknown"', body.replace(" ", ""))
