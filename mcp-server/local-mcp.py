@@ -3468,6 +3468,40 @@ async def _cf_proxy(request: StarletteRequest):
     return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
+# AT-1142 / CB-15: the skein-toolkit repo root (NOT `WORKSPACE`, which points at
+# the *consuming* project and is overridable via WORKSPACE_ROOT) -- this is the
+# source tree local-mcp.py itself lives in, so its commit SHA identifies which
+# version of the server code a running process was started from.
+_SERVER_REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _get_server_commit_sha() -> str:
+    """Short commit SHA of the skein-toolkit working tree this server was
+    started from. Printed at startup and served on /health so
+    toolchain-doctor.ps1 can detect a stale running server (CB-15: the server
+    process keeps serving an old commit after the working tree has moved on)."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=_SERVER_REPO_ROOT,
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+        print(f"[cfproxy][health] git rev-parse failed (rc={result.returncode}): "
+              f"{result.stderr.strip()}", file=sys.stderr)
+        return "unknown"
+    except Exception as e:
+        print(f"[cfproxy][health] could not determine server commit SHA: {e}", file=sys.stderr)
+        return "unknown"
+
+
+async def _health(request: StarletteRequest) -> JSONResponse:
+    """AT-1142 / CB-15: reports the commit SHA of the running server's source
+    tree, used by toolchain-doctor.ps1 to detect a stale server process."""
+    return JSONResponse({"status": "ok", "commit": _get_server_commit_sha()})
+
+
 if __name__ == "__main__":
     # --print-resume-prompt <key>: CB-9/OQ-262 Option C resume support. Prints
     # the resume prompt for a paused_for_oq run to stdout and exits without
@@ -3488,15 +3522,18 @@ if __name__ == "__main__":
         sys.exit(0)
 
     print(f"Local MCP server starting...")
+    print(f"  running from commit {_get_server_commit_sha()} ({_SERVER_REPO_ROOT})")
     print(f"Workspace: {WORKSPACE}")
     print(f"Listening on http://127.0.0.1:3100/sse  (MCP tools)")
     print(f"CF proxy at   http://127.0.0.1:3100/cfproxy/{{account_id}}/v1")
+    print(f"Health/staleness check at http://127.0.0.1:3100/health")
     print(f"Add to Continue.dev: run  .\\scripts\\set-continue-config.ps1 -McpLocal")
 
     # Combine FastMCP SSE app with CF proxy routes on a single uvicorn server
     mcp_app = mcp.sse_app()
     combined = Starlette(routes=[
         Route("/cfproxy/{account_id}/{rest:path}", _cf_proxy, methods=["POST", "GET", "OPTIONS"]),
+        Route("/health", _health, methods=["GET"]),
         Mount("/", app=mcp_app),
     ])
     uvicorn.run(combined, host="127.0.0.1", port=3100, log_level="info")

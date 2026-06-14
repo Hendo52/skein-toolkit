@@ -51,6 +51,7 @@ if ($DiagnoseOnly) {
 
 $litellmOk = $false
 $mcpOk     = $false
+$mcpStale  = $false
 $cfOk      = $false
 $clineOk   = $false
 
@@ -116,6 +117,38 @@ function Test-LocalMcpSse {
     return ($headers -match "(?i)content-type:\s*text/event-stream")
 }
 
+# AT-1142 / CB-15: query the running server's /health endpoint for the commit
+# SHA it was started from. Returns $null if /health is missing or unreachable
+# -- e.g. the running process predates AT-1142 and has no /health route at all.
+function Get-LocalMcpServerSha {
+    try {
+        $health = Invoke-RestMethod -Uri "http://127.0.0.1:3100/health" -TimeoutSec 3 -ErrorAction Stop
+        return $health.commit
+    } catch {
+        return $null
+    }
+}
+
+# Starts local-mcp.py as a plain background process and waits for /sse to come
+# up. Used both to start a not-running server and to restart a STALE one.
+function Start-LocalMcpAndWait {
+    param([int]$TimeoutSeconds = 20)
+    $outLog = Join-Path $RepoRoot "cf_proxy_live.log"
+    $errLog = Join-Path $RepoRoot "cf_proxy_live.err.log"
+    Start-Process -FilePath $VenvPython -ArgumentList "`"$LocalMcpScript`"" -WorkingDirectory $RepoRoot `
+        -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $ok = $false
+    while ((Get-Date) -lt $deadline -and -not $ok) {
+        Start-Sleep -Seconds 2
+        if ((Get-NetTCPConnection -LocalPort 3100 -State Listen -ErrorAction SilentlyContinue) -and (Test-LocalMcpSse)) {
+            $ok = $true
+        }
+    }
+    return [PSCustomObject]@{ Ok = $ok; OutLog = $outLog; ErrLog = $errLog }
+}
+
 $listening = Get-NetTCPConnection -LocalPort 3100 -State Listen -ErrorAction SilentlyContinue
 if (-not $listening) {
     Write-Host "  PROBLEM: nothing is listening on port 3100." -ForegroundColor Red
@@ -128,23 +161,13 @@ if (-not $listening) {
             Write-Host "  Fix: starting local-mcp.py as a background process ..." -ForegroundColor Cyan
             Write-Host "  Note: this is a plain background process, not the VS Code debugger -- code edits to" -ForegroundColor DarkGray
             Write-Host "        local-mcp.py still require restarting via the 'Local MCP Server' debug config." -ForegroundColor DarkGray
-            $outLog = Join-Path $RepoRoot "cf_proxy_live.log"
-            $errLog = Join-Path $RepoRoot "cf_proxy_live.err.log"
-            Start-Process -FilePath $VenvPython -ArgumentList "`"$LocalMcpScript`"" -WorkingDirectory $RepoRoot `
-                -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
-
-            $deadline = (Get-Date).AddSeconds(20)
-            while ((Get-Date) -lt $deadline -and -not $mcpOk) {
-                Start-Sleep -Seconds 2
-                if ((Get-NetTCPConnection -LocalPort 3100 -State Listen -ErrorAction SilentlyContinue) -and (Test-LocalMcpSse)) {
-                    $mcpOk = $true
-                }
-            }
-            if ($mcpOk) {
-                Write-Host "  FIXED - local-mcp.py is up and /sse responds. Logs: $outLog / $errLog" -ForegroundColor Green
+            $result = Start-LocalMcpAndWait -TimeoutSeconds 20
+            if ($result.Ok) {
+                Write-Host "  FIXED - local-mcp.py is up and /sse responds. Logs: $($result.OutLog) / $($result.ErrLog)" -ForegroundColor Green
+                $mcpOk = $true
             } else {
                 Write-Host "  FIX FAILED - port 3100 still not serving /sse after 20s." -ForegroundColor Red
-                Write-Host "  Check: $errLog" -ForegroundColor Yellow
+                Write-Host "  Check: $($result.ErrLog)" -ForegroundColor Yellow
             }
         }
     } else {
@@ -152,8 +175,48 @@ if (-not $listening) {
         Write-Host "       or:  .venv\Scripts\python.exe mcp-server\local-mcp.py" -ForegroundColor Cyan
     }
 } elseif (Test-LocalMcpSse) {
-    Write-Host "  OK - local-mcp.py is up and /sse responds correctly." -ForegroundColor Green
-    $mcpOk = $true
+    # AT-1142 / CB-15: the server is up and /sse responds, but is it running
+    # the code currently on disk, or a stale process left over from before the
+    # latest edit/commit? Compare /health's reported commit SHA against the
+    # working tree's HEAD.
+    $workingTreeSha = (& git -C $RepoRoot rev-parse --short HEAD 2>$null | Out-String).Trim()
+    $serverSha = Get-LocalMcpServerSha
+
+    if ($serverSha -and $workingTreeSha -and $serverSha -eq $workingTreeSha) {
+        Write-Host "  OK - local-mcp.py is up, /sse responds, and is running the current commit ($serverSha)." -ForegroundColor Green
+        $mcpOk = $true
+    } else {
+        $mcpStale = $true
+        $ownerPid = $listening[0].OwningProcess
+        if (-not $serverSha) {
+            Write-Host "  STALE: local-mcp.py is up and /sse responds, but /health is missing or unreachable (PID $ownerPid)." -ForegroundColor Yellow
+            Write-Host "  Cause:   the running process predates AT-1142 -- it was started before the /health endpoint existed, so it is definitely running old code." -ForegroundColor Yellow
+        } else {
+            Write-Host "  STALE: local-mcp.py (PID $ownerPid) is running commit $serverSha, but the working tree is at $workingTreeSha." -ForegroundColor Yellow
+            Write-Host "  Cause:   local-mcp.py was started before the latest edits/commits -- it is serving OLD CODE (CB-15)." -ForegroundColor Yellow
+        }
+        Write-Host "  Impact:  the CF proxy and MCP tools are running stale code -- any fix verified against this process may be testing the wrong behavior." -ForegroundColor Yellow
+        if ($Fix -and -not (Test-Path $VenvPython)) {
+            Write-Host "  FIX SKIPPED: $VenvPython not found -- cannot relaunch local-mcp.py automatically." -ForegroundColor Red
+            Write-Host "  Fix: Stop-Process -Id $ownerPid -Force, then start local-mcp.py manually with a Python that has its deps installed." -ForegroundColor Cyan
+        } elseif ($Fix) {
+            Write-Host "  Fix: restarting local-mcp.py (kill PID $ownerPid, plain relaunch) ..." -ForegroundColor Cyan
+            Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 1
+            $result = Start-LocalMcpAndWait -TimeoutSeconds 20
+            if ($result.Ok) {
+                $newSha = Get-LocalMcpServerSha
+                Write-Host "  FIXED - local-mcp.py restarted, now running commit $newSha. Logs: $($result.OutLog) / $($result.ErrLog)" -ForegroundColor Green
+                $mcpOk = $true
+                $mcpStale = $false
+            } else {
+                Write-Host "  FIX FAILED - port 3100 still not serving /sse after restart." -ForegroundColor Red
+                Write-Host "  Check: $($result.ErrLog)" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "  Fix: Stop-Process -Id $ownerPid -Force, then restart 'Local MCP Server' in VS Code (F5) or re-run this script without -DiagnoseOnly." -ForegroundColor Cyan
+        }
+    }
 } else {
     $ownerPid = $listening[0].OwningProcess
     $procCmd  = (Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue).CommandLine
@@ -283,8 +346,10 @@ if (-not (Test-Path $providersFile)) {
 Write-Host ""
 Write-Host "===================" -ForegroundColor Cyan
 Write-Host "Summary" -ForegroundColor Cyan
+$mcpStatus = if ($mcpOk) { 'OK' } elseif ($mcpStale) { 'STALE' } else { 'PROBLEM' }
+$mcpColor  = if ($mcpOk) { 'Green' } elseif ($mcpStale) { 'Yellow' } else { 'Red' }
 Write-Host "  LiteLLM (4000):          $(if ($litellmOk) { 'OK' } else { 'PROBLEM' })" -ForegroundColor $(if ($litellmOk) { 'Green' } else { 'Red' })
-Write-Host "  local-mcp.py (3100):     $(if ($mcpOk) { 'OK' } else { 'PROBLEM' })" -ForegroundColor $(if ($mcpOk) { 'Green' } else { 'Red' })
+Write-Host "  local-mcp.py (3100):     $mcpStatus" -ForegroundColor $mcpColor
 Write-Host "  Cloudflare token:        $(if ($cfOk) { 'OK' } else { 'PROBLEM' })" -ForegroundColor $(if ($cfOk) { 'Green' } else { 'Red' })
 Write-Host "  Cline MCP connection:    $(if ($clineOk) { 'OK' } else { 'PROBLEM' })" -ForegroundColor $(if ($clineOk) { 'Green' } else { 'Red' })
 Write-Host ""
@@ -294,6 +359,7 @@ Write-Host ""
 [PSCustomObject]@{
     LiteLlmOk = $litellmOk
     LocalMcpOk = $mcpOk
+    LocalMcpStale = $mcpStale
     CfTokenOk = $cfOk
     ClineMcpOk = $clineOk
 }
