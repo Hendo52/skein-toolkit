@@ -3,7 +3,9 @@
 Unit tests for the ADR-011 OQ/AT authoring MCP tools in local-mcp.py
 (AT-1137/AT-1138): `create_open_question` (and its helpers `_next_oq_id`,
 `_format_oq_row`, `_append_oq_row`) and `create_actionable_task` (and its
-helpers `_next_at_id`, `_format_at_row`, `_append_at_row`).
+helpers `_next_at_id`, `_format_at_row`, `_append_at_row`); plus the OQ
+read/resolve tools (AT-1161): `list_open_questions`, `get_open_question`,
+`resolve_open_question`.
 
 Run with: .venv\\Scripts\\python.exe mcp-server\\tests\\test_local_mcp_oq_at_tools.py
 (or `python -m unittest discover mcp-server/tests` from repo root)
@@ -28,6 +30,27 @@ _OQ_DOC_TEMPLATE = """# Architect Open Questions
 | ID | Question | Context / Spec | Unblocks | Date Added |
 |----|----------|-----------------|----------|------------|
 | OQ-5 | Existing question? | Some spec | Some unblock | 2026-06-01 |
+"""
+
+_OQ_DOC_WITH_MULTILINE = """# Architect Open Questions
+
+**Last updated:** 2026-06-15 (something happened)
+
+## Open Questions
+
+| ID | Question | Context / Spec | Unblocks | Date Added |
+|----|----------|-----------------|----------|------------|
+| OQ-271 | **Some single-line question?** | context | unblocks | 2026-06-15 |
+| OQ-270 | **[ORCHESTRATOR] Multi-line question?**
+
+**Problem.** Some prose that spans multiple lines and paragraphs.
+
+**Options considered:** (A) do this. (B) do that.
+| OQ-269 | **Another single-line question?** | context2 | unblocks2 | 2026-06-14 |
+
+## Resolved
+
+Some resolved history here.
 """
 
 _AT_QUEUE_WITH_INTAKE = """# AI Task Queue
@@ -169,6 +192,78 @@ class TestCreateOpenQuestion(_LedgerTestCase):
     def test_io_failure_returns_error_for_missing_ledger(self):
         local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = os.path.join(self._tmpdir, "does-not-exist.md")
         result = local_mcp.create_open_question(**self._valid_kwargs())
+        self.assertTrue(result.startswith("ERROR:"))
+
+
+class TestListOpenQuestions(_LedgerTestCase):
+    def test_lists_all_rows_newest_first_with_dates(self):
+        local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = self._write_ledger(_OQ_DOC_WITH_MULTILINE, ".md")
+        result = local_mcp.list_open_questions()
+        lines = result.splitlines()
+        self.assertEqual(lines[0], "OQ-271 (2026-06-15): Some single-line question?")
+        self.assertEqual(lines[1], "OQ-270 (?): [ORCHESTRATOR] Multi-line question?")
+        self.assertEqual(lines[2], "OQ-269 (2026-06-14): Another single-line question?")
+
+    def test_empty_table_returns_no_open_questions_message(self):
+        empty_doc = "# Architect Open Questions\n\n## Open Questions\n\nNone right now.\n"
+        local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = self._write_ledger(empty_doc, ".md")
+        self.assertEqual(local_mcp.list_open_questions(), "No open questions found.")
+
+    def test_io_failure_returns_error_for_missing_ledger(self):
+        local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = os.path.join(self._tmpdir, "does-not-exist.md")
+        result = local_mcp.list_open_questions()
+        self.assertTrue(result.startswith("ERROR:"))
+
+
+class TestGetOpenQuestion(_LedgerTestCase):
+    def test_returns_single_line_block(self):
+        local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = self._write_ledger(_OQ_DOC_WITH_MULTILINE, ".md")
+        result = local_mcp.get_open_question(271)
+        self.assertEqual(result, "| OQ-271 | **Some single-line question?** | context | unblocks | 2026-06-15 |\n")
+
+    def test_returns_full_multiline_block(self):
+        local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = self._write_ledger(_OQ_DOC_WITH_MULTILINE, ".md")
+        result = local_mcp.get_open_question(270)
+        self.assertTrue(result.startswith("| OQ-270 |"))
+        self.assertIn("**Problem.**", result)
+        self.assertIn("**Options considered:**", result)
+        self.assertNotIn("OQ-269", result)
+
+    def test_unknown_id_returns_error(self):
+        local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = self._write_ledger(_OQ_DOC_WITH_MULTILINE, ".md")
+        result = local_mcp.get_open_question(999)
+        self.assertTrue(result.startswith("ERROR:"))
+        self.assertIn("OQ-999", result)
+
+    def test_io_failure_returns_error_for_missing_ledger(self):
+        local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = os.path.join(self._tmpdir, "does-not-exist.md")
+        result = local_mcp.get_open_question(271)
+        self.assertTrue(result.startswith("ERROR:"))
+
+
+class TestResolveOpenQuestion(_LedgerTestCase):
+    def test_removes_block_and_returns_it(self):
+        local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = self._write_ledger(_OQ_DOC_WITH_MULTILINE, ".md")
+        result = local_mcp.resolve_open_question(270)
+        self.assertTrue(result.startswith("| OQ-270 |"))
+        self.assertIn("**Problem.**", result)
+        contents = open(local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH, encoding="utf-8").read()
+        self.assertNotIn("OQ-270", contents)
+        self.assertIn("| OQ-271 |", contents)
+        self.assertIn("| OQ-269 |", contents)
+
+    def test_unknown_id_returns_error_and_writes_nothing(self):
+        local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = self._write_ledger(_OQ_DOC_WITH_MULTILINE, ".md")
+        before = open(local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH, encoding="utf-8").read()
+        result = local_mcp.resolve_open_question(999)
+        self.assertTrue(result.startswith("ERROR:"))
+        self.assertIn("OQ-999", result)
+        after = open(local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH, encoding="utf-8").read()
+        self.assertEqual(before, after)
+
+    def test_io_failure_returns_error_for_missing_ledger(self):
+        local_mcp.ORCHESTRATOR_OQ_LEDGER_PATH = os.path.join(self._tmpdir, "does-not-exist.md")
+        result = local_mcp.resolve_open_question(271)
         self.assertTrue(result.startswith("ERROR:"))
 
 

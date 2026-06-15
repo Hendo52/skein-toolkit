@@ -23,6 +23,13 @@ import os
 import subprocess
 import sys
 
+# ledger_io.py is a sibling module with the pure OQ/AT ledger-text functions
+# (next_oq_id, insert_oq_row, etc.) -- inserted on sys.path via __file__ (not
+# a hardcoded path) so the import works both when this script is run directly
+# and when a test loads it via importlib.util.spec_from_file_location.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ledger_io
+
 try:
     from mcp.server.fastmcp import FastMCP
     from mcp.server.fastmcp.server import TransportSecuritySettings
@@ -53,6 +60,8 @@ mcp = FastMCP(
         "Use read_file/write_file for reliable file I/O. "
         "Use load_skill(name) to load a project workflow skill by name. "
         "Use list_skills() to see all available skills. "
+        "Use list_open_questions() / get_open_question(id) / resolve_open_question(id) "
+        "to read or resolve rows in the OQ ledger without reading the whole file. "
         "All paths are relative to the workspace root unless absolute. "
         f"Workspace root: {WORKSPACE}"
     ),
@@ -1859,21 +1868,12 @@ def _run_validator_pass(step_task: str, summary_text: str, changed_files: list, 
     return "yes", "no failure language detected; this step did not imply a working-tree change"
 
 
-def _next_oq_id(oq_doc_text: str) -> int:
-    """Pick the next free OQ id. The live sequence the architect works through
-    is contiguous in the low hundreds (currently topping out at OQ-258);
-    OQ-900 is a one-off from a different numbering context (a geometry/zone-
-    classification question raised 2026-05-09, well BEFORE OQ-258's 2026-05-28
-    -- ids here are not chronological). Minting OQ-901 next to that one-off
-    would start a second sequence; continuing the live one (OQ-259) is what an
-    architect skimming the table top-to-bottom would expect."""
-    ids = [int(m) for m in re.findall(r"^\|\s*OQ-(\d+)\s*\|", oq_doc_text, re.MULTILINE)]
-    live_sequence = [i for i in ids if i < 500]
-    return (max(live_sequence) if live_sequence else max(ids, default=0)) + 1
-
-
-def _format_oq_row(oq_id: int, question: str, context: str, unblocks: str, date: str) -> str:
-    return f"| OQ-{oq_id} | {question} | {context} | {unblocks} | {date} |\n"
+# _next_oq_id / _format_oq_row: see ledger_io.py for implementation and docs --
+# moved there (AT-1161) so the OQ-ledger text logic can be unit-tested without
+# a FastMCP server or tempfile. Aliased here under their original names so
+# existing call sites and tests (test_local_mcp_oq_at_tools.py) are unaffected.
+_next_oq_id = ledger_io.next_oq_id
+_format_oq_row = ledger_io.format_oq_row
 
 
 _OQ_SEARCH_STOPWORDS = frozenset({
@@ -2031,25 +2031,23 @@ def _append_oq_row(row: str) -> bool:
     separator -- the file's existing convention is newest-first (OQ-258 sits
     above OQ-257, etc.), so a fresh row belongs at the top of the table body,
     not the bottom. Returns False (and logs) if the separator can't be found --
-    the caller must not silently lose an OQ it believes it raised."""
+    the caller must not silently lose an OQ it believes it raised. The "where
+    in the text does this go" logic lives in ledger_io.insert_oq_row (unit
+    tested); this function is just the file I/O + path resolution around it."""
     path = _resolve(ORCHESTRATOR_OQ_LEDGER_PATH)
     try:
         with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+            doc_text = f.read()
     except Exception as e:
         print(f"[cfproxy][orchestrator] failed to read OQ doc to append a row: {e}", file=sys.stderr)
         return False
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith("|---") or stripped.startswith("|----") or stripped.startswith("| ---"):
-            lines.insert(i + 1, row)
-            break
-    else:
+    new_text, inserted = ledger_io.insert_oq_row(doc_text, row)
+    if not inserted:
         print("[cfproxy][orchestrator] OQ doc has no '|---' header separator -- refusing to guess where to insert", file=sys.stderr)
         return False
     try:
         with open(path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
+            f.write(new_text)
     except Exception as e:
         print(f"[cfproxy][orchestrator] failed to write OQ doc after appending a row: {e}", file=sys.stderr)
         return False
@@ -2195,6 +2193,85 @@ def create_open_question(
     return f"OQ-{oq_id}"
 
 
+@mcp.tool()
+def list_open_questions() -> str:
+    """List every OQ in the Open Questions table as a one-line summary:
+    "OQ-<N> (<date>): <title>", newest-first (the ledger's own ordering).
+
+    Use this instead of reading the whole OQ ledger file when the question is
+    "what's open" -- the ledger's "Last updated" header is a long prose
+    history of every previously-resolved OQ that is irrelevant to that
+    question and costs many tokens to read.
+
+    Returns "No open questions found." if the table is empty, or an
+    "ERROR: ..." string if the ledger can't be read."""
+    path = _resolve(ORCHESTRATOR_OQ_LEDGER_PATH)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            doc_text = f.read()
+    except Exception as e:
+        return f"ERROR: could not read OQ ledger at {path}: {e}"
+    entries = ledger_io.parse_oq_summaries(doc_text)
+    if not entries:
+        return "No open questions found."
+    return "\n".join(f"OQ-{e['id']} ({e['date'] or '?'}): {e['summary']}" for e in entries)
+
+
+@mcp.tool()
+def get_open_question(oq_id: int) -> str:
+    """Return the full text of OQ-<oq_id>'s row, including any multi-line
+    continuation (many orchestrator-raised OQs embed several paragraphs in
+    their Question cell). Returns "ERROR: OQ-<oq_id> not found ..." if no row
+    with that id exists in the Open Questions table.
+
+    Use this to read one specific OQ's full content cheaply, instead of
+    reading the whole ledger file (which also contains the long "Last
+    updated" changelog history of every previously-resolved OQ)."""
+    path = _resolve(ORCHESTRATOR_OQ_LEDGER_PATH)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            doc_text = f.read()
+    except Exception as e:
+        return f"ERROR: could not read OQ ledger at {path}: {e}"
+    block = ledger_io.get_oq_block(doc_text, oq_id)
+    if block is None:
+        return f"ERROR: OQ-{oq_id} not found in the Open Questions table at {path}"
+    return block
+
+
+@mcp.tool()
+def resolve_open_question(oq_id: int) -> str:
+    """Remove OQ-<oq_id>'s row from the Open Questions table and return its
+    full text. Returns "ERROR: OQ-<oq_id> not found ..." (and writes nothing)
+    if no row with that id exists.
+
+    This is deliberately ONLY the mechanical half of resolving an OQ: it does
+    not compose a "Last updated" changelog entry summarizing the architect's
+    decision. That entry requires the architect's actual answer and an
+    agent's judgment about how to phrase it -- a first-class step of its own,
+    not a "fallback" this tool skips. After calling this, write a new
+    "Previously: (<date>) (**OQ-<oq_id> resolved ...** -- <summary of the
+    decision>)" entry prepended to the ledger's "Last updated" line, following
+    the existing entries there as a format model."""
+    path = _resolve(ORCHESTRATOR_OQ_LEDGER_PATH)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            doc_text = f.read()
+    except Exception as e:
+        return f"ERROR: could not read OQ ledger at {path}: {e}"
+    new_text, removed = ledger_io.remove_oq_block(doc_text, oq_id)
+    if removed is None:
+        return f"ERROR: OQ-{oq_id} not found in the Open Questions table at {path}"
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new_text)
+    except Exception as e:
+        print(f"[cfproxy][oq] failed to write OQ doc after removing OQ-{oq_id}: {e}", file=sys.stderr)
+        return f"ERROR: failed to write OQ ledger after removing OQ-{oq_id}: {e}"
+    print(f"[cfproxy][oq] OQ-{oq_id} row removed from {path} -- caller must still record a 'Last updated' changelog entry", file=sys.stderr)
+    return removed
+
+
 # Fixed A/B/C option labels for the bounded ambiguity-escalation path's OQ --
 # the full pros/cons for each are embedded in _format_step_ambiguity_oq's
 # "Options considered (S6.3)" section of the question cell; these short
@@ -2244,34 +2321,18 @@ def _raise_step_ambiguity_oq(run_key: str, state: dict, step_idx: int, step_task
 
 _AT_VALID_STATES = ("Ready", "Blocked", "In Progress", "Done", "Decomposed")
 
-_AT_READY_POOL_HEADING_PREFIX = "## Ready Pool"
 
-_AT_INTAKE_HEADING = "### Newly Decomposed Tasks (Intake)"
-
-_AT_INTAKE_INTRO = (
-    "> New AT rows created via the `create_actionable_task` MCP tool (AT-1138) land here for "
-    "triage -- review/add `Agent:`/`Model:` annotations and dependencies, then relocate each "
-    "row into its appropriate lane.\n"
-)
-
-_AT_TABLE_HEADER = "| ID | Task | Spec / Issue | Exit Evidence | Effort | Depends On |\n"
-_AT_TABLE_SEP = "|----|------|-------------|---------------|--------|------------|\n"
-
-
-def _next_at_id(queue_text: str) -> int:
-    """Pick the next free AT id: the highest AT-<N> referenced anywhere in
-    ai-task-queue.md, plus 1. `.N` subtask suffixes (e.g. AT-1146.2) are
-    ignored -- the regex captures only the base number before any '.'."""
-    ids = [int(m) for m in re.findall(r"AT-(\d+)", queue_text)]
-    return (max(ids) if ids else 0) + 1
-
-
-def _format_at_row(at_id: int, description: str, spec_issue: str, dependencies: str,
-                    exit_evidence: str, effort: str, state: str) -> str:
-    task_cell = f"**{description}**"
-    if state != "Ready":
-        task_cell = f"**{state}** -- {task_cell}"
-    return f"| AT-{at_id} | {task_cell} | {spec_issue} | {exit_evidence} | {effort} | {dependencies} |\n"
+# _next_at_id / _format_at_row / the _AT_* layout constants: see ledger_io.py
+# for implementation and docs -- moved there (AT-1161) alongside the OQ-side
+# functions. Aliased here under their original names so existing call sites
+# and tests (test_local_mcp_oq_at_tools.py) are unaffected.
+_next_at_id = ledger_io.next_at_id
+_format_at_row = ledger_io.format_at_row
+_AT_READY_POOL_HEADING_PREFIX = ledger_io._AT_READY_POOL_HEADING_PREFIX
+_AT_INTAKE_HEADING = ledger_io._AT_INTAKE_HEADING
+_AT_INTAKE_INTRO = ledger_io._AT_INTAKE_INTRO
+_AT_TABLE_HEADER = ledger_io._AT_TABLE_HEADER
+_AT_TABLE_SEP = ledger_io._AT_TABLE_SEP
 
 
 def _append_at_row(row: str) -> bool:
@@ -2281,51 +2342,23 @@ def _append_at_row(row: str) -> bool:
     directly below the subsection's table header separator (newest first,
     matching _append_oq_row's convention for the OQ ledger). Returns False
     (and logs) if the insertion point can't be found -- the caller must not
-    silently lose an AT it believes it created."""
+    silently lose an AT it believes it created. The "where in the text does
+    this go" logic lives in ledger_io.insert_at_row (unit tested); this
+    function is just the file I/O + path resolution around it."""
     path = _resolve(AT_QUEUE_PATH)
     try:
         with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+            queue_text = f.read()
     except Exception as e:
         print(f"[cfproxy][taskqueue] failed to read AT queue to append a row: {e}", file=sys.stderr)
         return False
-
-    for i, line in enumerate(lines):
-        if line.rstrip("\n") == _AT_INTAKE_HEADING:
-            for j in range(i + 1, len(lines)):
-                if lines[j].startswith("## ") or lines[j].startswith("### "):
-                    print("[cfproxy][taskqueue] Intake subsection has no table separator before the next heading -- refusing to guess", file=sys.stderr)
-                    return False
-                stripped = lines[j].lstrip()
-                if stripped.startswith("|---") or stripped.startswith("|----") or stripped.startswith("| ---"):
-                    lines.insert(j + 1, row)
-                    break
-            else:
-                print("[cfproxy][taskqueue] Intake subsection has no table separator -- refusing to guess", file=sys.stderr)
-                return False
-            break
-    else:
-        for i, line in enumerate(lines):
-            if line.startswith(_AT_READY_POOL_HEADING_PREFIX):
-                lines[i + 1:i + 1] = [
-                    "\n",
-                    _AT_INTAKE_HEADING + "\n",
-                    "\n",
-                    _AT_INTAKE_INTRO,
-                    "\n",
-                    _AT_TABLE_HEADER,
-                    _AT_TABLE_SEP,
-                    row,
-                    "\n",
-                ]
-                break
-        else:
-            print(f"[cfproxy][taskqueue] AT queue has no '{_AT_READY_POOL_HEADING_PREFIX}' heading -- refusing to guess where to insert", file=sys.stderr)
-            return False
-
+    new_text, inserted = ledger_io.insert_at_row(queue_text, row)
+    if not inserted:
+        print(f"[cfproxy][taskqueue] AT queue has no '{_AT_INTAKE_HEADING}' subsection with a table separator and no '{_AT_READY_POOL_HEADING_PREFIX}' heading -- refusing to guess where to insert", file=sys.stderr)
+        return False
     try:
         with open(path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
+            f.write(new_text)
     except Exception as e:
         print(f"[cfproxy][taskqueue] failed to write AT queue after appending a row: {e}", file=sys.stderr)
         return False
