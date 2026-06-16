@@ -1365,6 +1365,26 @@ def _latest_user_message(body: dict) -> str:
     return ""
 
 
+def _strip_cline_injected_context(message: str) -> str:
+    """Strip Cline-injected wrapper sections from a user message so that
+    _detect_multi_step_ask and _run_planner_pass see only the architect's
+    literal typed text, not Cline's appended environment metadata.
+
+    Strips:
+    - <environment_details>...</environment_details> blocks (may span many lines)
+    - 'Recently Modified Files' section header and any following indented/blank lines
+
+    AT-1174 / BUG-SR-1.4: the 2026-06-15 incident showed that Cline's
+    injected environment context can dominate the message text in length and
+    action-verb density, causing the heuristic to misclassify the *context*
+    as the *request*.
+    """
+    import re
+    stripped = re.sub(r"<environment_details>.*?</environment_details>", "", message, flags=re.DOTALL)
+    stripped = re.sub(r"(?m)^Recently Modified Files\b.*?(?=\n\S|\Z)", "", stripped, flags=re.DOTALL)
+    return stripped.strip()
+
+
 def _conversation_has_tool_use(messages: list) -> bool:
     """True if any assistant message in `messages` already contains a tool
     call -- i.e. Cline is mid-task and the "latest user message" is tool-result
@@ -3108,12 +3128,13 @@ async def _cf_proxy(request: StarletteRequest):
     if isinstance(body.get("messages"), list) and not _conversation_has_tool_use(body["messages"]):
         messages = body["messages"]
         user_message = _latest_user_message(body)
-        is_multi_step, reason = _detect_multi_step_ask(user_message)
+        architect_ask = _strip_cline_injected_context(user_message)
+        is_multi_step, reason = _detect_multi_step_ask(architect_ask)
         if is_multi_step:
             await _record_metric("multi_step_heuristic_fired")
             print(f"[cfproxy] multi-step ask detected ({reason}) -- running planner pass", file=sys.stderr)
             await _record_metric("planner_pass_triggered")
-            steps = await _run_planner_pass(cf_url, headers["Authorization"], model_name, user_message)
+            steps = await _run_planner_pass(cf_url, headers["Authorization"], model_name, architect_ask)
             if steps and len(steps) > _ORCHESTRATOR_MAX_STEPS:
                 print(f"[cfproxy] planner pass produced {len(steps)} steps, exceeds the {_ORCHESTRATOR_MAX_STEPS}-step "
                       f"orchestration cap -- forwarding original request unchanged (a hard circuit breaker; "
