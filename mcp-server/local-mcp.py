@@ -2550,7 +2550,7 @@ def _format_findings_block(findings: list) -> str:
 
 
 def _build_step_dispatch_body(original_body: dict, tail_messages: list, step_task: str, step_index: int, total: int,
-                               findings: list = None) -> dict:
+                               findings: list = None, model: str = None) -> dict:
     """Replace the accumulated conversation with a fresh, narrow frame: the
     step's own prompt plus only the tool-call/result turns generated since THIS
     step began (`tail_messages`). Everything from the original multi-step ask,
@@ -2559,9 +2559,17 @@ def _build_step_dispatch_body(original_body: dict, tail_messages: list, step_tas
     carry-forward, which is prepended to the step prompt as a "Prior step
     findings" block so later steps don't need to re-read source documents to
     recover earlier steps' results."""
+    system_prompt = _ORCHESTRATOR_STEP_SYSTEM_PROMPT
+    if model:
+        system_prompt = (
+            system_prompt
+            + f" When making git commits in this step, include the trailer "
+            f"`Co-Authored-By: {model} <noreply@cf-proxy.local>` in the commit message body "
+            f"(on its own line, after a blank line following the summary)."
+        )
     narrowed = dict(original_body)
     narrowed["messages"] = [
-        {"role": "system", "content": _ORCHESTRATOR_STEP_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"{_format_findings_block(findings or [])}Step {step_index} of {total} -- do ONLY this step: {step_task}"},
     ] + tail_messages
     narrowed["stream"] = False
@@ -2827,7 +2835,7 @@ async def _dispatch_step(key: str, state: dict, step_idx: int, cf_url: str, auth
     total = len(state["steps"])
     await _record_metric("orchestrator_step_dispatched")
     dispatch_body = _build_step_dispatch_body(original_body, tail_messages, state["steps"][step_idx - 1], step_idx, total,
-                                              state.get("findings", []))
+                                              state.get("findings", []), state.get("model"))
     result = await _cf_complete_once(cf_url, auth_header, dispatch_body)
     if result is None:
         state["status"] = "halted"
