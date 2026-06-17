@@ -8,7 +8,7 @@ $EnvFile = Join-Path $ScriptDir "litellm.env"
 $ConfigFile = Join-Path $ScriptDir "litellm_config.yaml"
 
 if (-not (Test-Path $EnvFile)) {
-    Write-Error "Missing $EnvFile — copy mcp-server/litellm.env.example and fill in values."
+    Write-Error "Missing $EnvFile -- copy mcp-server/litellm.env.example and fill in values."
     exit 1
 }
 
@@ -29,7 +29,8 @@ Write-Host "Spend API:  http://localhost:4000/spend/calculate"
 Write-Host "Cost log:   $CostLog"
 Write-Host "Config:     $ConfigFile"
 
-# Force UTF-8 so LiteLLM's Unicode banner doesn't crash the pipe on Windows
+# Force UTF-8 so LiteLLM's Unicode banner renders correctly in PS5.1 console
+chcp 65001 | Out-Null
 $env:PYTHONIOENCODING = "utf-8"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -38,6 +39,7 @@ Write-Host "Waiting for LiteLLM to bind on port 4000 ..."
 $job = Start-Job -ScriptBlock {
     param($cfg, $log)
     $env:PYTHONIOENCODING = "utf-8"
+    $ErrorActionPreference = "SilentlyContinue"  # suppress PS5.1 NativeCommandError on litellm stderr
     litellm --config $cfg --port 4000 2>&1 | Tee-Object -Append -FilePath $log
 } -ArgumentList $ConfigFile, $CostLog
 
@@ -57,7 +59,9 @@ while ((Get-Date) -lt $deadline) {
         # falling back to IPv4, which spuriously trips the -TimeoutSec below and
         # throws TaskCanceledException instead of the expected 401 response.
         $r = Invoke-RestMethod -Uri "http://127.0.0.1:4000/health" -TimeoutSec 3 -ErrorAction Stop
-        Write-Host "[start-litellm] LiteLLM is up (status: $($r.status ?? 'ok'))"
+        $statusStr = 'ok'
+        if ($null -ne $r.status) { $statusStr = $r.status }
+        Write-Host "[start-litellm] LiteLLM is up (status: $statusStr)"
         $healthy = $true
         break
     } catch {
