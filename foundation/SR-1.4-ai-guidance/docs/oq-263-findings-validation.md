@@ -1,0 +1,2 @@
+- `ORCHESTRATOR_FINDINGS_CHAR_BUDGET` = 4000 — This constant defines the total character budget allocated to the "Prior step findings" block.
+- `ORCHESTRATOR_FINDING_MAX_CHARS` = 1000 — This constant sets the maximum number of characters allowed for each individual finding before it is stored.
