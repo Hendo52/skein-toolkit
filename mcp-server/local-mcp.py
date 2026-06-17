@@ -1354,6 +1354,62 @@ def _normalize_cf_messages(messages: list) -> list:
     return out
 
 
+# AT-1170: Validator-at-the-boundary for outbound _cf_proxy traffic. The proxy
+# forwards full conversation/tool-output text to external Cloudflare Workers
+# AI models (gpt-oss, kimi-k2.6) with no check for secret-shaped content --
+# this is that check. Redacts rather than rejects: blocking an entire request
+# over an incidental secret-shaped string in unrelated context (e.g. a code
+# sample showing *how* to set an env var) would halt legitimate work. Every
+# redaction is logged (First-Class Scenarios policy, CLAUDE.md) so a real leak
+# is noticed rather than silently dropped.
+_SECRET_REDACTION_PATTERNS: list = [
+    ("openai-style-key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b")),
+    ("aws-access-key-id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("env-style-assignment", re.compile(r"\b[A-Z][A-Z0-9_]*_(?:KEY|SECRET|TOKEN)\s*=\s*\S+")),
+]
+
+
+def _scrub_secrets(text: str) -> str:
+    """Redact secret-shaped substrings in `text`, logging each redaction.
+    Returns `text` unchanged if it is empty/falsy or has no matches."""
+    if not text:
+        return text
+    scrubbed = text
+    for name, pattern in _SECRET_REDACTION_PATTERNS:
+        def _redact(match, _name=name):
+            print(f"[cfproxy] secret-scrubber: redacted a {_name} match before forwarding outbound", file=sys.stderr)
+            return f"<REDACTED:{_name}>"
+        scrubbed = pattern.sub(_redact, scrubbed)
+    return scrubbed
+
+
+def _scrub_secrets_from_body(body: dict) -> dict:
+    """Apply _scrub_secrets to every message's text content in an outbound CF
+    request body. Handles both plain-string content and typed-block-array
+    content (array form may still be present for callers that invoke this
+    before _normalize_cf_messages)."""
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return body
+    scrubbed_messages = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            scrubbed_messages.append(msg)
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            msg = {**msg, "content": _scrub_secrets(content)}
+        elif isinstance(content, list):
+            new_content = []
+            for block in content:
+                if isinstance(block, dict) and isinstance(block.get("text"), str):
+                    block = {**block, "text": _scrub_secrets(block["text"])}
+                new_content.append(block)
+            msg = {**msg, "content": new_content}
+        scrubbed_messages.append(msg)
+    return {**body, "messages": scrubbed_messages}
+
+
 def _latest_user_message(body: dict) -> str:
     for msg in reversed(body.get("messages") or []):
         if isinstance(msg, dict) and msg.get("role") == "user":
@@ -3172,6 +3228,12 @@ async def _cf_proxy(request: StarletteRequest):
     # any forwarding path touches the body.
     if isinstance(body.get("messages"), list):
         body = {**body, "messages": _normalize_cf_messages(body["messages"])}
+
+    # AT-1170: scrub secret-shaped content before it leaves this process toward
+    # the external CF model. Runs after normalization (content is always a
+    # plain string by this point) and immediately before both the streaming
+    # and non-streaming forward paths below, so neither path can bypass it.
+    body = _scrub_secrets_from_body(body)
 
     if not is_stream:
         try:
