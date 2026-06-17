@@ -129,6 +129,27 @@ function Get-LocalMcpServerSha {
     }
 }
 
+# AT-1164 / OQ-273 Option A: an in-flight orchestrator run blocks the
+# auto-restart of local-mcp.py -- killing the server mid-run would orphan the
+# run's state file in "running" with no process left to advance it. Scans
+# every *.json file in ~/.cf_proxy_orchestrator/ (the same directory
+# local-mcp.py itself writes orchestrator state to) for status: "running".
+# Malformed/unreadable state files are skipped, not treated as blocking.
+function Test-OrchestratorRunActive {
+    $stateDir = Join-Path $env:USERPROFILE ".cf_proxy_orchestrator"
+    if (-not (Test-Path $stateDir)) { return $false }
+    $stateFiles = Get-ChildItem $stateDir -Filter "*.json" -ErrorAction SilentlyContinue
+    foreach ($f in $stateFiles) {
+        try {
+            $state = Get-Content $f.FullName -Raw | ConvertFrom-Json
+            if ($state.status -eq "running") { return $true }
+        } catch {
+            continue
+        }
+    }
+    return $false
+}
+
 # Starts local-mcp.py as a plain background process and waits for /sse to come
 # up. Used both to start a not-running server and to restart a STALE one.
 function Start-LocalMcpAndWait {
@@ -196,7 +217,17 @@ if (-not $listening) {
             Write-Host "  Cause:   local-mcp.py was started before the latest edits/commits -- it is serving OLD CODE (CB-15)." -ForegroundColor Yellow
         }
         Write-Host "  Impact:  the CF proxy and MCP tools are running stale code -- any fix verified against this process may be testing the wrong behavior." -ForegroundColor Yellow
-        if ($Fix -and -not (Test-Path $VenvPython)) {
+
+        # AT-1164 / OQ-273 Option A: never auto-restart out from under an
+        # in-flight orchestrator run -- killing the server would orphan its
+        # state file in "running" with no process left to advance it. The
+        # doctor still reports staleness in this case; it just leaves the
+        # restart to the user (re-run after the run finishes).
+        $orchestratorActive = Test-OrchestratorRunActive
+        if ($orchestratorActive) {
+            Write-Host "  FIX SKIPPED: an orchestrator run is in progress (a ~/.cf_proxy_orchestrator/*.json state file has status: running)." -ForegroundColor Yellow
+            Write-Host "  Fix: wait for the run to finish (or go halted/complete), then re-run this script to restart local-mcp.py." -ForegroundColor Cyan
+        } elseif ($Fix -and -not (Test-Path $VenvPython)) {
             Write-Host "  FIX SKIPPED: $VenvPython not found -- cannot relaunch local-mcp.py automatically." -ForegroundColor Red
             Write-Host "  Fix: Stop-Process -Id $ownerPid -Force, then start local-mcp.py manually with a Python that has its deps installed." -ForegroundColor Cyan
         } elseif ($Fix) {
