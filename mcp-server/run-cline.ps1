@@ -88,7 +88,10 @@ Write-Host ""
 # main.ts). See foundation/SR-1.4-ai-guidance/docs/cf-proxy-cheap-model-context-
 # budget-roadmap.md, 2026-06-11 entry.
 #
-# CB-20 (2026-06-17): Cline v3.x ships a Bun-compiled binary that uses
+# CB-22 (2026-06-17; renumbered from CB-20 2026-06-18 -- CB-20 collided with an
+# unrelated multi-step-detector bug already using that number in the roadmap
+# doc's section 10, see that doc's section 12 for the collision note): Cline
+# v3.x ships a Bun-compiled binary that uses
 # stdio: "inherit" in its Node.js wrapper (bin/cline). When started via
 # Start-Process -RedirectStandardInput <file>, the binary receives a Windows
 # file-handle as stdin rather than an anonymous pipe -- and appears not to read
@@ -117,7 +120,7 @@ $taskFileCmd = "`"$taskFile`""
 # Electron-Splines tree, see param block above) so cline's relative paths
 # always resolve against the intended repo regardless of the caller's cwd.
 #
-# CB-20 fix: use cmd.exe's pipe operator so Cline receives an anonymous pipe
+# CB-22 fix: use cmd.exe's pipe operator so Cline receives an anonymous pipe
 # (not a file handle) as stdin. "type <file> | npx cline" is the cmd.exe
 # equivalent of bash's "cat file | npx cline".
 $proc = Start-Process -FilePath "cmd.exe" `
