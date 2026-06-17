@@ -87,9 +87,20 @@ Write-Host ""
 # prompt from stdin when no TTY is attached and stdin is piped (apps/cli
 # main.ts). See foundation/SR-1.4-ai-guidance/docs/cf-proxy-cheap-model-context-
 # budget-roadmap.md, 2026-06-11 entry.
+#
+# CB-20 (2026-06-17): Cline v3.x ships a Bun-compiled binary that uses
+# stdio: "inherit" in its Node.js wrapper (bin/cline). When started via
+# Start-Process -RedirectStandardInput <file>, the binary receives a Windows
+# file-handle as stdin rather than an anonymous pipe -- and appears not to read
+# from it, exiting with code 1 immediately. Starting via cmd.exe's own pipe
+# operator ("type file | npx cline") gives Cline an anonymous pipe as stdin,
+# which it DOES read. Confirmed: bash-piped invocation works (b5ocqdff5
+# 2026-06-17); file-handle redirect does not.
 $taskFile = [System.IO.Path]::GetTempFileName()
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($taskFile, $Task, $utf8NoBom)
+# Escape the file path for cmd.exe (wrap in double-quotes; no special chars expected in temp path)
+$taskFileCmd = "`"$taskFile`""
 
 # -P openai-compatible is mandatory -- never rely on the stored lastUsedProvider.
 # -k is intentionally omitted: that flag goes to Cline cloud auth, not LiteLLM.
@@ -105,9 +116,12 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 # skein-toolkit -- pass a different -RepoRoot for tasks against the main
 # Electron-Splines tree, see param block above) so cline's relative paths
 # always resolve against the intended repo regardless of the caller's cwd.
+#
+# CB-20 fix: use cmd.exe's pipe operator so Cline receives an anonymous pipe
+# (not a file handle) as stdin. "type <file> | npx cline" is the cmd.exe
+# equivalent of bash's "cat file | npx cline".
 $proc = Start-Process -FilePath "cmd.exe" `
-    -ArgumentList "/c", "npx cline -P openai-compatible -m `"$Model`" $approveFlag" `
-    -RedirectStandardInput $taskFile `
+    -ArgumentList "/c", "type $taskFileCmd | npx cline -P openai-compatible -m `"$Model`" $approveFlag" `
     -WorkingDirectory $RepoRoot `
     -NoNewWindow -PassThru
 
