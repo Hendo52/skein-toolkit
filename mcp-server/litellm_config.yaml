@@ -169,10 +169,38 @@ model_list:
     model_info:
       description: "Kimi K2 0905 via Groq (LPU). 256k context, agentic tool-use. Compare against cf/kimi-k2.6."
 
-  # ─── DEEPSEEK TIER — direct API, testing 2026-06-11 ───────────────────────
-  # Direct DeepSeek API (OpenAI-compatible at api.deepseek.com). The
-  # `deepseek-chat` alias maps to V4 Flash non-thinking mode; it deprecates
-  # 2026-07-24 in favor of `deepseek-v4-flash` (functionally equivalent).
+  # ─── CEREBRAS TIER — US-based LPU, 2000+ tok/s ────────────────────────────
+  # Cerebras API (OpenAI-compatible at api.cerebras.ai/v1). US jurisdiction.
+  # Free tier: 1M tokens/day at rate-limited throughput.
+  # Paid: $0.10/M (8B), $0.60/M (70B). Sign up at cloud.cerebras.ai.
+  # Fastest option for interactive agentic loops -- beats GPU on throughput.
+
+  - model_name: cerebras/llama3.3-70b
+    litellm_params:
+      model: "cerebras/llama3.3-70b"
+      api_key: "os.environ/CEREBRAS_API_KEY"
+      max_tokens: 16384
+      input_cost_per_token: 0.0000006    # $0.60/M (free tier: same rate, capped 1M tokens/day)
+      output_cost_per_token: 0.0000006
+    model_info:
+      description: "Llama 3.3 70B via Cerebras LPU. 2,000+ tok/s -- fastest option for interactive sessions. 128k context. US jurisdiction. Free tier: 1M tokens/day."
+
+  - model_name: cerebras/llama3.1-8b
+    litellm_params:
+      model: "cerebras/llama3.1-8b"
+      api_key: "os.environ/CEREBRAS_API_KEY"
+      max_tokens: 8192
+      input_cost_per_token: 0.0000001    # $0.10/M
+      output_cost_per_token: 0.0000001
+    model_info:
+      description: "Llama 3.1 8B via Cerebras LPU. $0.10/M -- cheapest hosted option. Use for classification, routing, simple edits."
+
+  # ─── DEEPSEEK TIER — direct API ────────────────────────────────────────────
+  # WARNING: DeepSeek API sends data to servers in China (api.deepseek.com).
+  # Chinese national security law can compel data disclosure.
+  # DO NOT use for proprietary code or sensitive IP.
+  # Self-hosted DeepSeek via Ollama (local/deepseek-r1:*) is the safe alternative.
+  # Entry retained for non-sensitive tasks only -- set DEEPSEEK_API_KEY to enable.
 
   - model_name: deepseek/v4-flash
     litellm_params:
@@ -182,7 +210,7 @@ model_list:
       input_cost_per_token: 0.00000014   # $0.14/M input, cache-miss (2026-06)
       output_cost_per_token: 0.00000028  # $0.28/M output
     model_info:
-      description: "DeepSeek V4 Flash (deepseek-chat, non-thinking mode). 1M context, agentic coding. Cheapest frontier-class candidate under test."
+      description: "DeepSeek V4 Flash via DeepSeek API (China-based). NOT for proprietary code. Use local/deepseek-r1:* for safe self-hosted alternative."
 
   # ─── FRONTIER TIER — Direct API calls ─────────────────────────────────────
 
