@@ -1,0 +1,5 @@
+{"instances":[
+  {"id":111222333,"actual_status":"running","gpu_name":"RTX 4090","gpu_ram":24,"dph_total":0.45,"geolocation":"Portland, US","machine_id":9001},
+  {"id":444555666,"actual_status":"stopped","gpu_name":"RTX 3090","gpu_ram":24,"dph_total":0.30,"geolocation":"Frankfurt, DE","machine_id":9002},
+  {"id":777888999,"actual_status":"loading","gpu_name":"A6000","gpu_ram":48,"dph_total":0.60,"geolocation":"Amsterdam, NL","machine_id":9003}
+]}

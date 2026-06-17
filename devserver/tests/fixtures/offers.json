@@ -1,0 +1,10 @@
+[
+  {"id":"offer-001","gpu_name":"RTX 4090","gpu_ram":24,"dph_total":0.45,"geolocation":"Portland, US","machine_id":9001,"reliability":0.995,"min_bid":0.35},
+  {"id":"offer-002","gpu_name":"A100","gpu_ram":80,"dph_total":0.85,"geolocation":"Frankfurt, DE","machine_id":9002,"reliability":0.998,"min_bid":0.70},
+  {"id":"offer-003","gpu_name":"RTX 3090","gpu_ram":24,"dph_total":0.30,"geolocation":"Tokyo, JP","machine_id":9003,"reliability":0.997,"min_bid":0.25},
+  {"id":"offer-004","gpu_name":"RTX 3060","gpu_ram":12,"dph_total":0.20,"geolocation":"Shanghai, CN","machine_id":9004,"reliability":0.990,"min_bid":0.15},
+  {"id":"offer-005","gpu_name":"A6000","gpu_ram":48,"dph_total":0.60,"geolocation":"Moscow, RU","machine_id":9005,"reliability":0.992,"min_bid":0.50},
+  {"id":"offer-006","gpu_name":"RTX 3080","gpu_ram":10,"dph_total":0.18,"geolocation":"London, GB","machine_id":9006,"reliability":0.996,"min_bid":0.14},
+  {"id":"offer-007","gpu_name":"H100","gpu_ram":80,"dph_total":1.20,"geolocation":"Seattle, US","machine_id":9007,"reliability":0.999,"min_bid":1.00},
+  {"id":"offer-008","gpu_name":"RTX 4080","gpu_ram":16,"dph_total":0.35,"geolocation":"Toronto, CA","machine_id":9008,"reliability":0.994}
+]

@@ -1,0 +1,94 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<test-results xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="nunit_schema_2.5.xsd" name="Pester" total="53" errors="0" failures="0" not-run="0" inconclusive="0" ignored="0" skipped="0" invalid="0" date="2026-06-02" time="17:13:45">
+  <environment clr-version="10.0.8" user-domain="JAKEPC" os-version="10.0.26200" nunit-version="2.5.8.0" user="jakeh" cwd="C:\Users\jakeh\source\repos\Electron-Splines" machine-name="JAKEPC" platform="Microsoft Windows 11 Home|C:\WINDOWS|\Device\Harddisk2\Partition3" />
+  <culture-info current-culture="en-AU" current-uiculture="en-US" />
+  <test-suite type="TestFixture" name="Pester" executed="True" result="Success" success="True" time="1.1178" asserts="0" description="Pester">
+    <results>
+      <test-suite type="TestFixture" name="C:\Users\jakeh\source\repos\Electron-Splines\scripts\tests\DevServer.Lifecycle.Tests.ps1" executed="True" result="Success" success="True" time="1.1178" asserts="0" description="C:\Users\jakeh\source\repos\Electron-Splines\scripts\tests\DevServer.Lifecycle.Tests.ps1">
+        <results>
+          <test-suite type="TestFixture" name="READ: ConvertFrom-VastaiInstances" executed="True" result="Success" success="True" time="0.1747" asserts="0" description="READ: ConvertFrom-VastaiInstances">
+            <results>
+              <test-case description="parses wrapped {instances:[...]} format and returns running instance" name="READ: ConvertFrom-VastaiInstances.parses wrapped {instances:[...]} format and returns running instance" time="0.0884" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="parses bare [{...}] array format" name="READ: ConvertFrom-VastaiInstances.parses bare [{...}] array format" time="0.0043" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="handles empty instances list without errors" name="READ: ConvertFrom-VastaiInstances.handles empty instances list without errors" time="0.0071" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="correctly classifies all three statuses in a mixed list" name="READ: ConvertFrom-VastaiInstances.correctly classifies all three statuses in a mixed list" time="0.0061" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="classifies 'loading' as neither running nor stopped" name="READ: ConvertFrom-VastaiInstances.classifies 'loading' as neither running nor stopped" time="0.0209" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns null on malformed JSON without throwing" name="READ: ConvertFrom-VastaiInstances.returns null on malformed JSON without throwing" time="0.0107" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns null on empty string without throwing" name="READ: ConvertFrom-VastaiInstances.returns null on empty string without throwing" time="0.0027" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns null on whitespace-only string without throwing" name="READ: ConvertFrom-VastaiInstances.returns null on whitespace-only string without throwing" time="0.0023" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="preserves the instance ID field exactly (no float rounding)" name="READ: ConvertFrom-VastaiInstances.preserves the instance ID field exactly (no float rounding)" time="0.007" asserts="0" success="True" result="Success" executed="True" />
+            </results>
+          </test-suite>
+          <test-suite type="TestFixture" name="CREATE: Select-VastaiOffer" executed="True" result="Success" success="True" time="0.238" asserts="0" description="CREATE: Select-VastaiOffer">
+            <results>
+              <test-case description="rejects offers with VRAM below minimum" name="CREATE: Select-VastaiOffer.rejects offers with VRAM below minimum" time="0.0126" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="rejects offers above the price ceiling" name="CREATE: Select-VastaiOffer.rejects offers above the price ceiling" time="0.0052" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="rejects offers from CN (data-sovereignty blocklist)" name="CREATE: Select-VastaiOffer.rejects offers from CN (data-sovereignty blocklist)" time="0.0049" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="rejects offers from RU (sanctions blocklist)" name="CREATE: Select-VastaiOffer.rejects offers from RU (sanctions blocklist)" time="0.0031" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="selects the cheapest qualifying offer, not just the first" name="CREATE: Select-VastaiOffer.selects the cheapest qualifying offer, not just the first" time="0.0047" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns null when no offer meets all criteria" name="CREATE: Select-VastaiOffer.returns null when no offer meets all criteria" time="0.0042" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns null on empty offers array" name="CREATE: Select-VastaiOffer.returns null on empty offers array" time="0.0026" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="handles offers with no geolocation field without throwing" name="CREATE: Select-VastaiOffer.handles offers with no geolocation field without throwing" time="0.0174" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="allows offers from non-blocked countries" name="CREATE: Select-VastaiOffer.allows offers from non-blocked countries" time="0.0037" asserts="0" success="True" result="Success" executed="True" />
+            </results>
+          </test-suite>
+          <test-suite type="TestFixture" name="WATCH: Test-WatcherShouldStop" executed="True" result="Success" success="True" time="0.2975" asserts="0" description="WATCH: Test-WatcherShouldStop">
+            <results>
+              <test-case description="returns null when well within all limits" name="WATCH: Test-WatcherShouldStop.returns null when well within all limits" time="0.0088" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="stops when idle threshold is exactly reached" name="WATCH: Test-WatcherShouldStop.stops when idle threshold is exactly reached" time="0.011" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="does NOT stop when idle is one second below threshold" name="WATCH: Test-WatcherShouldStop.does NOT stop when idle is one second below threshold" time="0.004" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="stops when session cap is exactly reached" name="WATCH: Test-WatcherShouldStop.stops when session cap is exactly reached" time="0.0032" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="does NOT stop when session elapsed is one second below cap" name="WATCH: Test-WatcherShouldStop.does NOT stop when session elapsed is one second below cap" time="0.0025" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="stops when spend cap is exactly reached" name="WATCH: Test-WatcherShouldStop.stops when spend cap is exactly reached" time="0.0046" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="does NOT stop when spend is one cent below cap" name="WATCH: Test-WatcherShouldStop.does NOT stop when spend is one cent below cap" time="0.0025" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="suppresses idle stop when batch has Ready tasks" name="WATCH: Test-WatcherShouldStop.suppresses idle stop when batch has Ready tasks" time="0.0028" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="suppresses idle stop when batch has In Progress tasks" name="WATCH: Test-WatcherShouldStop.suppresses idle stop when batch has In Progress tasks" time="0.0024" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="hard-stops when batch is DONE with nothing pending" name="WATCH: Test-WatcherShouldStop.hard-stops when batch is DONE with nothing pending" time="0.003" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="does NOT hard-stop when batch is DONE but a task is still In Progress" name="WATCH: Test-WatcherShouldStop.does NOT hard-stop when batch is DONE but a task is still In Progress" time="0.0022" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="session cap fires even when batch has pending work (hard cap, not suppressible)" name="WATCH: Test-WatcherShouldStop.session cap fires even when batch has pending work (hard cap, not suppressible)" time="0.0025" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="spend cap fires even when batch has pending work (hard cap, not suppressible)" name="WATCH: Test-WatcherShouldStop.spend cap fires even when batch has pending work (hard cap, not suppressible)" time="0.0034" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="behaves as non-batch-aware when BatchReadyCount and BatchInProgressCount are -1" name="WATCH: Test-WatcherShouldStop.behaves as non-batch-aware when BatchReadyCount and BatchInProgressCount are -1" time="0.0031" asserts="0" success="True" result="Success" executed="True" />
+            </results>
+          </test-suite>
+          <test-suite type="TestFixture" name="BATCH: Get-BatchFileState" executed="True" result="Success" success="True" time="0.3559" asserts="0" description="BATCH: Get-BatchFileState">
+            <results>
+              <test-case description="reads ACTIVE status from active fixture" name="BATCH: Get-BatchFileState.reads ACTIVE status from active fixture" time="0.0094" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="counts Ready tasks correctly in active batch" name="BATCH: Get-BatchFileState.counts Ready tasks correctly in active batch" time="0.0062" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="identifies In Progress tasks in active batch" name="BATCH: Get-BatchFileState.identifies In Progress tasks in active batch" time="0.0054" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="reports DONE status from done fixture" name="BATCH: Get-BatchFileState.reports DONE status from done fixture" time="0.0058" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="reports zero In Progress tasks in done batch" name="BATCH: Get-BatchFileState.reports zero In Progress tasks in done batch" time="0.0063" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="throws on missing status frontmatter comment" name="BATCH: Get-BatchFileState.throws on missing status frontmatter comment" time="0.0135" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="throws when batch file does not exist" name="BATCH: Get-BatchFileState.throws when batch file does not exist" time="0.0037" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns the correct file path in the result" name="BATCH: Get-BatchFileState.returns the correct file path in the result" time="0.0049" asserts="0" success="True" result="Success" executed="True" />
+            </results>
+          </test-suite>
+          <test-suite type="TestFixture" name="UPDATE: Wait-ForRunning" executed="True" result="Success" success="True" time="0.5219" asserts="0" description="UPDATE: Wait-ForRunning">
+            <results>
+              <test-case description="returns the running instance when it is running on first poll" name="UPDATE: Wait-ForRunning.returns the running instance when it is running on first poll" time="0.1365" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns null immediately when TimeoutMinutes is 0 (deadline already past)" name="UPDATE: Wait-ForRunning.returns null immediately when TimeoutMinutes is 0 (deadline already past)" time="0.0081" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns null when instance ID is not present in the response" name="UPDATE: Wait-ForRunning.returns null when instance ID is not present in the response" time="0.0059" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns null when vastai returns empty instance list" name="UPDATE: Wait-ForRunning.returns null when vastai returns empty instance list" time="0.0071" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns null when vastai returns malformed JSON" name="UPDATE: Wait-ForRunning.returns null when vastai returns malformed JSON" time="0.0055" asserts="0" success="True" result="Success" executed="True" />
+            </results>
+          </test-suite>
+          <test-suite type="TestFixture" name="READ: Get-DevServerInstances" executed="True" result="Success" success="True" time="0.5438" asserts="0" description="READ: Get-DevServerInstances">
+            <results>
+              <test-case description="returns parsed instance data when vastai returns valid JSON" name="READ: Get-DevServerInstances.returns parsed instance data when vastai returns valid JSON" time="0.01" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns null when vastai returns an error string instead of JSON" name="READ: Get-DevServerInstances.returns null when vastai returns an error string instead of JSON" time="0.0071" asserts="0" success="True" result="Success" executed="True" />
+            </results>
+          </test-suite>
+          <test-suite type="TestFixture" name="OLLAMA: Get-OllamaStatus" executed="True" result="Success" success="True" time="0.652" asserts="0" description="OLLAMA: Get-OllamaStatus">
+            <results>
+              <test-case description="returns 'idle' when models array is empty" name="OLLAMA: Get-OllamaStatus.returns 'idle' when models array is empty" time="0.0438" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns 'idle' when models property is null" name="OLLAMA: Get-OllamaStatus.returns 'idle' when models property is null" time="0.0109" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns 'busy:modelname' when a model is loaded" name="OLLAMA: Get-OllamaStatus.returns 'busy:modelname' when a model is loaded" time="0.0114" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns 'busy:' with comma-separated names when multiple models loaded" name="OLLAMA: Get-OllamaStatus.returns 'busy:' with comma-separated names when multiple models loaded" time="0.0104" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns 'unreachable' when Invoke-RestMethod throws (tunnel down)" name="OLLAMA: Get-OllamaStatus.returns 'unreachable' when Invoke-RestMethod throws (tunnel down)" time="0.0122" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="returns 'unreachable' on timeout (not 'idle' -- unknown is not idle)" name="OLLAMA: Get-OllamaStatus.returns 'unreachable' on timeout (not 'idle' -- unknown is not idle)" time="0.0156" asserts="0" success="True" result="Success" executed="True" />
+            </results>
+          </test-suite>
+        </results>
+      </test-suite>
+    </results>
+  </test-suite>
+</test-results>
