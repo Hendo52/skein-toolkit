@@ -135,14 +135,40 @@ function Get-LocalMcpServerSha {
 # every *.json file in ~/.cf_proxy_orchestrator/ (the same directory
 # local-mcp.py itself writes orchestrator state to) for status: "running".
 # Malformed/unreadable state files are skipped, not treated as blocking.
+#
+# CB-24 (2026-06-18): the original version treated ANY "running" status file
+# as blocking forever, with no staleness check -- a run that was abandoned
+# (terminal closed, process killed, machine rebooted) without its state file
+# ever being updated to "halted"/"complete" permanently prevents local-mcp.py
+# from ever auto-restarting, even days later. Confirmed empirically: 30 state
+# files dated 2026-06-11..06-14 were still "running" on 2026-06-18, silently
+# blocking every restart attempt in between -- the server ran 4+ days of
+# accumulated commits behind HEAD as a direct result. A run only counts as
+# blocking now if it is BOTH status:"running" AND has updated its state
+# (`updated`, falling back to `created` for older state files predating that
+# field) within $StalenessThresholdMinutes -- a single orchestrator step's own
+# dispatch timeout is well under 10 minutes (ORCHESTRATOR_DISPATCH_TIMEOUT_SECONDS
+# = 590s), so 60 minutes is generous headroom for an OQ-pause that's still
+# genuinely about to resume, while still reclaiming anything actually abandoned.
 function Test-OrchestratorRunActive {
+    param([int]$StalenessThresholdMinutes = 60)
     $stateDir = Join-Path $env:USERPROFILE ".cf_proxy_orchestrator"
     if (-not (Test-Path $stateDir)) { return $false }
     $stateFiles = Get-ChildItem $stateDir -Filter "*.json" -ErrorAction SilentlyContinue
+    $cutoff = (Get-Date).ToUniversalTime().AddMinutes(-$StalenessThresholdMinutes)
     foreach ($f in $stateFiles) {
         try {
             $state = Get-Content $f.FullName -Raw | ConvertFrom-Json
-            if ($state.status -eq "running") { return $true }
+            if ($state.status -ne "running") { continue }
+            $tsRaw = if ($state.updated) { $state.updated } elseif ($state.created) { $state.created } else { $null }
+            if (-not $tsRaw) {
+                # No timestamp at all to judge staleness by -- treat as blocking
+                # (the conservative direction: never auto-restart out from under
+                # a run we can't actually prove is dead).
+                return $true
+            }
+            $ts = [DateTime]::Parse($tsRaw).ToUniversalTime()
+            if ($ts -ge $cutoff) { return $true }
         } catch {
             continue
         }
