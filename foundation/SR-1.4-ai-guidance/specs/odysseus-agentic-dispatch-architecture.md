@@ -109,19 +109,31 @@ dispatch_coding_task(at_id: int, model: str = "cf/kimi-k2.6") -> str
   equivalent `get_at_block`-style accessor -- needed as part of implementation).
 - Resolves which repo the task targets. AT rows don't currently declare this
   explicitly (see AT-1216 item 7 -- multi-repo awareness) -- until that lands,
-  require an explicit `repo_root` parameter or infer it from the `Spec / Issue`
-  column's file paths.
+  require an explicit `repo_root` parameter (**OQ-288 resolved, Option A** --
+  required argument as a stopgap until AT-1223's multi-repo AT awareness
+  lands).
+- **Serializes to one job at a time per repo (OQ-285 resolved, Option A).** A
+  second `dispatch_coding_task` call against a repo with an already-running
+  job is rejected (or queued -- implementation's choice, but must not run
+  concurrently) rather than spawning a second Cline process against the same
+  working tree.
 - Spawns the **Cline CLI** (not the VS Code extension -- see §3.3) using the
   same invocation shape as `run-cline.ps1`, as a detached background process,
   and returns immediately with a job id. Must not block the calling chat turn
   for the job's full duration (this session observed real AT dispatches taking
   200-1200+ seconds).
-- Writes a job-state JSON file in `~/.cf_proxy_orchestrator/` (or a sibling
-  directory if conflating "chat-turn orchestration" and "AT dispatch" job
-  state under one directory turns out to confuse the existing staleness
-  tooling -- implementation should check `toolchain-doctor.ps1`'s
-  `Test-OrchestratorRunActive` staleness logic, fixed this session, doesn't
-  mistake a long-running coding job for an abandoned chat-orchestration run).
+- **Commits land on a dedicated branch (e.g. `at-<id>-dispatch`), never
+  directly on the target repo's default branch (OQ-286 resolved, Option B --
+  deviates from this spec's original preemptive answer).** Architect
+  reasoning: unattended jobs aren't watched live regardless of concurrency, so
+  a review/promote gate before the default branch matters even at the
+  one-job-at-a-time concurrency OQ-285 settled on. Promotion is §3.2a's job,
+  not this tool's.
+- Writes a job-state JSON file in its **own directory, separate from
+  `~/.cf_proxy_orchestrator/`** (OQ-287 resolved, Option B) -- chat-turn
+  orchestration steps and 20+ minute coding jobs are different enough that
+  sharing a directory risked confusing `toolchain-doctor.ps1`'s
+  `Test-OrchestratorRunActive` staleness logic (fixed this session, CB-24).
 
 ### 3.2 Status tool
 
@@ -130,7 +142,23 @@ get_coding_task_status(job_id: str) -> str
 ```
 
 Reads the job-state file, returns status, elapsed time, and (once complete)
-the commit SHA and a short diff summary (`git show --stat`).
+the commit SHA (on the job's dedicated branch, not yet on the default branch
+-- see §3.2a), and a short diff summary (`git show --stat`).
+
+### 3.2a Promote tool (added per OQ-286's resolution)
+
+```
+promote_coding_task(job_id: str) -> str
+```
+
+The explicit human-approval step OQ-286 requires: confirms the job completed
+successfully (rejects -- does not silently no-op -- if the job is still
+running or failed), then merges/fast-forwards the job's dedicated branch into
+the target repo's default branch, updating job state to reflect promotion.
+The architect reviews via `get_coding_task_status`'s diff summary (or the
+richer Monaco diff view, §3.4/AT-1221) before calling this -- review is a
+chat action ("promote AT-1218's job"), not a separate UI flow, matching the
+spec's "chat is the primary interface" goal throughout. Tracked as AT-1229.
 
 ### 3.3 Why Cline CLI, not the VS Code extension
 
@@ -167,18 +195,19 @@ be blocked on a UI spike landing first.
 
 ---
 
-## 5. Concurrency and review-model questions (raised here, not resolved)
+## 5. Concurrency and review-model questions -- resolved 2026-06-18 (OQ-285, OQ-286)
 
-Two questions this spec deliberately leaves open rather than guesses at,
-because the wrong guess is expensive to unwind once jobs are actually
-running concurrently against shared repos:
+Both answered by the architect; see §3.1/§3.2a for the resulting design and
+§7 for the full resolution record:
 
-- **OQ (draft, see §7):** should `dispatch_coding_task` serialize to one job
-  at a time per repo initially, or allow N concurrent jobs from day one?
-- **OQ (draft, see §7):** does the existing direct-to-main commit pattern
-  (used throughout this session, and the project's general practice) remain
-  correct once concurrent jobs are possible, or does that threshold require
-  a staging-branch-plus-promote step?
+- **OQ-285:** `dispatch_coding_task` serializes to one job at a time per repo
+  (Option A).
+- **OQ-286:** commits land on a dedicated branch, promoted to the default
+  branch only via the new `promote_coding_task` tool (Option B -- this
+  deviates from the preemptive answer below; kept for the record). Decided
+  independently of OQ-285's answer, not contingent on concurrency existing --
+  the architect's reasoning was that unattended jobs aren't watched live
+  regardless of how many run at once.
 
 ---
 
@@ -196,66 +225,56 @@ insufficient.
 
 ---
 
-## 7. Draft Open Questions spawned by this spec
+## 7. Open Questions spawned by this spec -- all resolved 2026-06-18
 
-These are staged here in draft form; promoting them to live rows in
-`architect-open-questions.md` is part of this AT's exit evidence (see AT-1216).
+Promoted to live rows (OQ-285..288) and resolved the same day; the rows
+themselves are deleted from `architect-open-questions.md` per this project's
+resolved-row policy (delete + changelog entry, not annotate-in-place). Record
+kept here for spec-local traceability:
 
-1. **Job concurrency model.** Options: **(A)** serialize to one job at a time
-   per repo (simplest, avoids the git-conflict and Checkpoint-collision risk
-   classes entirely). **(B)** allow N concurrent jobs from day one (matches
-   the "fleet management" framing more literally, but multiplies every
-   shared-state risk found this session). Preemptive answer: **A** -- ship
-   the simplest version that proves the loop closes end-to-end; revisit only
-   once a real backlog of Ready ATs makes serialization the bottleneck, not
-   before.
-2. **Review/merge gate.** Options: **(A)** keep today's direct-to-main commit
-   pattern. **(B)** introduce a staging-branch-plus-promote step once jobs
-   run unattended. Preemptive answer: **A** for now, explicitly re-open this
-   the moment OQ-1 above is answered **B** (concurrency and the merge gate
-   are coupled -- a staging step matters far more once two jobs could commit
-   to the same repo near-simultaneously).
-3. **Job-state directory.** Options: **(A)** reuse `~/.cf_proxy_orchestrator/`
-   for coding-task jobs too. **(B)** give coding-task jobs their own
-   directory to avoid confusing the chat-turn-orchestration staleness logic
-   (`toolchain-doctor.ps1`'s `Test-OrchestratorRunActive`, fixed this
-   session) with long-running coding jobs that legitimately stay "running"
-   for 20+ minutes. Preemptive answer: **B** -- the two concepts are
-   different enough (chat-turn steps vs. multi-minute coding jobs) that
-   sharing a directory risks exactly the kind of staleness-detection
-   confusion this session spent real effort fixing.
-4. **AT row repo targeting.** Options: **(A)** require an explicit
-   `repo_root` argument to `dispatch_coding_task` until AT-1216 item 7 lands.
+1. **Job concurrency model (OQ-285).** Options: **(A)** serialize to one job
+   at a time per repo. **(B)** allow N concurrent jobs from day one.
+   **Resolved: Option A.**
+2. **Review/merge gate (OQ-286).** Options: **(A)** keep today's
+   direct-to-main commit pattern. **(B)** introduce a staging-branch-plus-promote
+   step now. **Resolved: Option B** (deviates from this spec's original
+   preemptive answer of A) -- see §5 for the architect's reasoning. Spawned
+   AT-1229 (`promote_coding_task`).
+3. **Job-state directory (OQ-287).** Options: **(A)** reuse
+   `~/.cf_proxy_orchestrator/`. **(B)** give coding-task jobs their own
+   directory. **Resolved: Option B.**
+4. **AT row repo targeting (OQ-288).** Options: **(A)** require an explicit
+   `repo_root` argument to `dispatch_coding_task` until AT-1223 lands.
    **(B)** block `dispatch_coding_task` entirely until multi-repo AT
-   awareness exists. Preemptive answer: **A** -- don't let a sequencing
-   accident block the higher-value tool; an explicit argument is a one-line
-   stopgap.
+   awareness exists. **Resolved: Option A.**
 
 ---
 
-## 8. Draft AT tasks spawned by this spec
+## 8. AT tasks spawned by this spec -- live as AT-1219..1230
 
-Staged here; adding these as live Intake rows in `ai-task-queue.md` is part
-of this AT's exit evidence.
+All 11 tasks below are live Intake rows in `ai-task-queue.md` (AT-1219..1230;
+the dashboard-redesign-side tasks landed first as AT-1219..1228, AT-1229 was
+added when OQ-286 resolved to Option B).
 
-| # | Task | Effort | Depends on |
-|---|------|--------|------------|
-| 1 | Add `dispatch_coding_task(at_id, repo_root, model)` MCP tool to `local-mcp.py`, reusing `run-cline.ps1`'s invocation shape and a new job-state directory (OQ-3 above) | Medium | OQ-1..4 above |
-| 2 | Add `get_coding_task_status(job_id)` MCP tool | Small | #1 |
-| 3 | Extend `dashboard_routes.py`/`dashboard.html` to list coding-task jobs alongside existing orchestrator runs (AT-1216 item 3) | Small-Medium | #1 |
-| 4 | Add a dedicated OQ UI to the dashboard with a one-click resolve calling `resolve_open_question` (AT-1216 item 1) | Medium | -- |
-| 5 | Add a cost chart + monthly spend projection reading `~/.litellm/costs.jsonl` and `~/.cf_proxy_spend.json` (AT-1216 item 2; reconcile with already-queued AT-1186) | Small-Medium | AT-1186 |
-| 6 | Make `task_queue_reader.py`'s `_GLOBAL_DIR` a configurable list instead of a single hardcoded path (AT-1216 item 7) | Small | -- |
-| 7 | Document the workspace-registration preset template (§6) -- no new code, just a documented, copy-pasteable preset | Tiny | -- |
-| 8 | Monaco diff-editor spike for job review (AT-1216 item 6, Adopt disposition) | Medium | #1, #2 |
-| 9 | xterm.js live-terminal-streaming spike for in-flight job output (AT-1216 item 6, Adopt disposition) | Medium | #1 |
-| 10 | Resolve the SR-1.4 taxonomy mismatch (§9): give skein-toolkit's AI-ops content its own SR identity instead of borrowing Electron-Splines's SR-1.4 (which actually means ES's own Copilot agent pipeline) | Small | -- |
+| # | Task | AT ID | Effort | Depends on |
+|---|------|-------|--------|------------|
+| 1 | `dispatch_coding_task(at_id, repo_root, model)` MCP tool -- serializes per repo, commits to a dedicated branch (not main), own job-state directory, requires `repo_root` | AT-1228 | Medium | -- |
+| 2 | `get_coding_task_status(job_id)` MCP tool | AT-1227 | Small | #1 |
+| 11 | `promote_coding_task(job_id)` MCP tool (spawned by OQ-286 Option B) | AT-1229 | Small-Medium | #1 |
+| 3 | Extend `dashboard_routes.py`/`dashboard.html` to list coding-task jobs | AT-1226 | Small-Medium | #1 |
+| 4 | Dedicated OQ UI with one-click resolve | AT-1225 | Medium | -- |
+| 5 | Cost chart + monthly spend projection | AT-1224 | Small-Medium | AT-1186 |
+| 6 | `task_queue_reader.py`'s `_GLOBAL_DIR` -> configurable list | AT-1223 | Small | -- |
+| 7 | Workspace-registration preset template doc | AT-1222 | Tiny | -- |
+| 8 | Monaco diff-editor spike | AT-1221 | Medium | #1, #2 |
+| 9 | xterm.js live-terminal-streaming spike | AT-1220 | Medium | #1 |
+| 10 | Resolve the SR-1.4 taxonomy mismatch (§9) | AT-1219 | Small | -- |
 
-**Rough count: 4 draft OQs + 10 draft ATs.** Expect this to grow on the next
-Decomposition Gate pass once #1 specifically gets implemented -- a tool this
-central usually surfaces its own sub-ambiguities once real AT rows are run
-through it (the recursive-convergence pattern `task-and-oq-authoring-standard.md`
-Part 3 describes is the expected shape here, not a sign the plan was wrong).
+**Final count: 4 OQs (all resolved same day) + 11 ATs** (one more than this
+spec's original estimate of 10 -- OQ-286's answer spawning AT-1229 is exactly
+the recursive-convergence pattern `task-and-oq-authoring-standard.md` Part 3
+describes: answering an OQ is itself a new high-level input that can spawn
+further ATs, not a sign the original plan was wrong).
 
 ---
 
