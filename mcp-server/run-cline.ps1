@@ -133,8 +133,17 @@ $elapsed  = [math]::Round(((Get-Date) - $startTime).TotalSeconds, 1)
 Remove-Item $taskFile -ErrorAction SilentlyContinue
 
 if (-not $finished) {
-    Write-Warning "[run-cline] TIMEOUT after ${TimeoutSec}s -- killing Cline process (pid $($proc.Id))"
-    $proc.Kill()
+    Write-Warning "[run-cline] TIMEOUT after ${TimeoutSec}s -- killing Cline process tree (root pid $($proc.Id))"
+    # CB-25 (2026-06-18): $proc.Kill() only kills the immediate child (cmd.exe).
+    # The actual command is a pipeline ("type file | npx cline ..."), so the
+    # real cline.exe binary runs several processes downstream (cmd -> npx ->
+    # node -> cline.exe) and survives a single-process Kill() as an orphan --
+    # confirmed empirically: a "killed" AT-1212 dispatch's cline.exe kept
+    # running unsupervised and unreviewed for the rest of that session,
+    # making further edits no one asked for or watched. taskkill's /T flag
+    # kills the whole process tree rooted at the given PID, not just the one
+    # process.
+    & taskkill /F /T /PID $proc.Id 2>&1 | Out-Null
     Write-Warning "[run-cline] The task was NOT completed. Consider splitting it into smaller steps."
     exit 124
 }

@@ -136,6 +136,17 @@ internally from the AT row's own `Model:` annotation.)
   check can't resolve (e.g. PID reused after a restart). Mirrors, rather than
   duplicates, the staleness pattern already proven in
   `toolchain-doctor.ps1`'s `Test-OrchestratorRunActive`.
+  **CB-25 (found 2026-06-18, live, not hypothetical):** when this tool needs
+  to kill a job (timeout, cancellation, a future force-stop), use `taskkill
+  /F /T /PID` (kills the whole process tree), never a single-process
+  `Stop-Process`/`$proc.Kill()`. `run-cline.ps1`'s own timeout-kill used
+  `$proc.Kill()` on the wrapping `cmd.exe`, which doesn't reach the actual
+  `cline.exe` running downstream in a `type file | npx cline` pipeline --
+  confirmed empirically: a "killed" job's `cline.exe` kept running
+  unsupervised for the rest of that session, editing files no one reviewed,
+  until caught by accident via a stray `git status`. Fixed in `run-cline.ps1`
+  same day; `dispatch_coding_task`'s own kill path must use the same
+  pattern, not reintroduce the bug.
 - Resolves which repo the task targets. AT rows don't currently declare this
   explicitly (see AT-1216 item 7 -- multi-repo awareness) -- until that lands,
   require an explicit `repo_root` parameter (**OQ-288 resolved, Option A** --
