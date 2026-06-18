@@ -18,5 +18,12 @@ node_modules/
 # Orchestrator run state (local-only)
 .cf_proxy_orchestrator/
 
+# local-mcp.py / LiteLLM run logs (CLAUDE.md GREEN whitelist: *.log is
+# benign untracked, but this repo never actually ignored it -- found while
+# smoke-testing dispatch_coding_task's working-tree-clean precondition,
+# which (correctly) flagged these as dirty since git itself didn't know to
+# ignore them)
+*.log
+
 # Editor
 .vscode/
