@@ -147,6 +147,17 @@ internally from the AT row's own `Model:` annotation.)
   until caught by accident via a stray `git status`. Fixed in `run-cline.ps1`
   same day; `dispatch_coding_task`'s own kill path must use the same
   pattern, not reintroduce the bug.
+- **Branch isolation mechanism (implementation detail, not a fresh OQ --
+  OQ-286 already decided commits land on a branch; this is just how):**
+  `git checkout -b` in the target repo's existing working directory would
+  switch what that shared directory has checked out, colliding with anyone
+  -- a human, or this very session -- working in that same directory at the
+  same time. Use `git worktree add <path> -b at-<id>-dispatch` instead: a
+  second, isolated working directory checked out to the new branch, leaving
+  the primary working tree's checkout completely undisturbed. Cline runs
+  against the worktree path (passed as `run-cline.ps1`'s `-RepoRoot`), not
+  the original repo path. `promote_coding_task` (AT-1230) removes the
+  worktree (`git worktree remove`) after merging.
 - Resolves which repo the task targets. AT rows don't currently declare this
   explicitly (see AT-1216 item 7 -- multi-repo awareness) -- until that lands,
   require an explicit `repo_root` parameter (**OQ-288 resolved, Option A** --
