@@ -257,3 +257,95 @@ def insert_at_row(queue_text: str, row: str) -> "tuple[str, bool]":
             return "".join(lines), True
 
     return queue_text, False
+
+
+# AT-1228: AT rows had no get_oq_block-style accessor before this -- every
+# prior AT-row lookup in this codebase was done by an agent grepping/reading
+# the file directly. dispatch_coding_task needs to resolve a row
+# programmatically, so this mirrors the OQ block functions above rather than
+# inventing a separate convention.
+_AT_ROW_START_RE = re.compile(r"^\|\s*AT-(\d+)\s*\|", re.MULTILINE)
+# Tolerates the inconsistent formatting actually used across existing rows:
+# "Model: Tier-R", "Model: Tier-C.", "Model: `Tier-C`.", etc.
+_AT_MODEL_TIER_RE = re.compile(r"Model:\s*`?(Tier-[RCM])`?\.?")
+
+
+def _at_block_bounds(doc_text: str, at_id: int) -> "tuple[int, int] | None":
+    """Same shape as _oq_block_bounds, for AT-<at_id>. AT rows are single-line
+    in every row this codebase has produced so far (format_at_row always
+    emits one line), but this still scans to the next row/heading rather than
+    assuming exactly one line, for the same reason _oq_block_bounds does:
+    a future row format change shouldn't silently break this."""
+    lines = doc_text.splitlines(keepends=True)
+    starts: list[tuple[int, int, int]] = []
+    offset = 0
+    for idx, line in enumerate(lines):
+        m = _AT_ROW_START_RE.match(line)
+        if m:
+            starts.append((int(m.group(1)), idx, offset))
+        offset += len(line)
+
+    target = next((s for s in starts if s[0] == at_id), None)
+    if target is None:
+        return None
+    _, start_idx, start_offset = target
+    later_starts = [s[1] for s in starts if s[1] > start_idx]
+    end_idx = min(later_starts) if later_starts else len(lines)
+    for idx in range(start_idx + 1, end_idx):
+        if _HEADING_RE.match(lines[idx]):
+            end_idx = idx
+            break
+    end_offset = sum(len(l) for l in lines[:end_idx])
+    return start_offset, end_offset
+
+
+def get_at_block(doc_text: str, at_id: int) -> "str | None":
+    """Return AT-<at_id>'s full row text, or None if not found. Returns the
+    FIRST occurrence in document order -- ai-task-queue.md is known to
+    contain duplicate/historical re-mentions of some AT ids in separate
+    closeout-log tables further down the file (found 2026-06-18, AT-1239's
+    motivating example); the live Intake-table row is always the first one
+    encountered top-to-bottom."""
+    bounds = _at_block_bounds(doc_text, at_id)
+    if bounds is None:
+        return None
+    start, end = bounds
+    return doc_text[start:end]
+
+
+def parse_at_row(doc_text: str, at_id: int) -> "dict | None":
+    """Parse AT-<at_id>'s row into its table columns plus an extracted
+    model_tier. Returns None if the row isn't found. Returns
+    {"id", "raw", "description", "spec_issue", "exit_evidence", "effort",
+    "depends_on", "model_tier"} -- model_tier is None if no "Model: Tier-X"
+    annotation is found (grandfathered pre-policy rows, per
+    ai-model-selection-policy.md S11.2 -- the caller must decide what to do
+    about a missing tier, this function does not guess one)."""
+    block = get_at_block(doc_text, at_id)
+    if block is None:
+        return None
+    # Split on " | " at the top level of the markdown table row. AT
+    # descriptions can themselves contain pipe-adjacent characters in code
+    # spans, but every row produced by format_at_row uses literal " | "
+    # (space-pipe-space) only as the column separator, never inside a cell --
+    # splitting on that exact substring is safe for this codebase's rows.
+    body = block.strip()
+    if body.startswith("|"):
+        body = body[1:]
+    if body.endswith("|"):
+        body = body[:-1]
+    cols = [c.strip() for c in body.split(" | ")]
+    if len(cols) < 6:
+        return None
+    _id_col, description, spec_issue, exit_evidence, effort, depends_on = cols[:6]
+    tier_match = _AT_MODEL_TIER_RE.search(description)
+    return {
+        "id": at_id,
+        "raw": block,
+        "description": description,
+        "spec_issue": spec_issue,
+        "exit_evidence": exit_evidence,
+        "effort": effort,
+        "depends_on": depends_on,
+        "model_tier": tier_match.group(1) if tier_match else None,
+    }

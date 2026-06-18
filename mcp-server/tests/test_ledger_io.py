@@ -251,5 +251,54 @@ class TestInsertAtRow(unittest.TestCase):
         self.assertEqual(new_text, doc)
 
 
+_AT_DOC = (
+    "| AT-1228 | **[Odysseus dispatch] Add dispatch_coding_task. Agent: `typescript`. Model: Tier-C.** "
+    "| spec1 | evidence1 | Medium | AT-1231 |\n"
+    "| AT-1227 | **[Odysseus dispatch] Add get_coding_task_status. Agent: `docs`. Model: `Tier-R`.** "
+    "| spec2 | evidence2 | Small | AT-1228 |\n"
+    "| AT-1222 | **Grandfathered row with no Model annotation at all.** | spec3 | evidence3 | Tiny | -- |\n"
+    "\n"
+    "### Closeout log\n"
+    "\n"
+    "| AT-1228 | Lane N -- duplicate historical mention, not the live row | 2026-01-01 | -- | x |\n"
+)
+
+
+class TestGetAtBlock(unittest.TestCase):
+    def test_returns_first_occurrence_not_a_later_duplicate(self):
+        block = ledger_io.get_at_block(_AT_DOC, 1228)
+        self.assertTrue(block.startswith("| AT-1228 |"))
+        self.assertIn("dispatch_coding_task", block)
+        self.assertNotIn("Lane N", block)
+
+    def test_stops_before_next_row(self):
+        block = ledger_io.get_at_block(_AT_DOC, 1228)
+        self.assertNotIn("AT-1227", block)
+
+    def test_missing_id_returns_none(self):
+        self.assertIsNone(ledger_io.get_at_block(_AT_DOC, 9999))
+
+
+class TestParseAtRow(unittest.TestCase):
+    def test_extracts_columns_and_tier_with_no_backtick(self):
+        row = ledger_io.parse_at_row(_AT_DOC, 1228)
+        self.assertEqual(row["model_tier"], "Tier-C")
+        self.assertEqual(row["spec_issue"], "spec1")
+        self.assertEqual(row["exit_evidence"], "evidence1")
+        self.assertEqual(row["effort"], "Medium")
+        self.assertEqual(row["depends_on"], "AT-1231")
+
+    def test_extracts_tier_with_backtick_wrapping(self):
+        row = ledger_io.parse_at_row(_AT_DOC, 1227)
+        self.assertEqual(row["model_tier"], "Tier-R")
+
+    def test_missing_model_annotation_returns_none_tier_not_a_guess(self):
+        row = ledger_io.parse_at_row(_AT_DOC, 1222)
+        self.assertIsNone(row["model_tier"])
+
+    def test_missing_id_returns_none(self):
+        self.assertIsNone(ledger_io.parse_at_row(_AT_DOC, 9999))
+
+
 if __name__ == "__main__":
     unittest.main()
