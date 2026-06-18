@@ -119,8 +119,8 @@ internally from the AT row's own `Model:` annotation.)
   credit exhaustion, CF Workers AI capacity 429s, a local model hallucinating
   a tool call). **Naming caveat:** that policy names tiers Level-1/2/3; every
   AT row written to date (including this spec's own) uses Tier-R/C/M from
-  `ai-task-queue.md`'s header instead -- a real drift, tracked as AT-1232,
-  this tool's model-resolution code should use whichever naming AT-1232
+  `ai-task-queue.md`'s header instead -- a real drift, tracked as AT-1231,
+  this tool's model-resolution code should use whichever naming AT-1231
   settles on, not invent a third mapping.
 - **Working-tree precondition (resolved 2026-06-18):** refuses to start if
   the target repo has uncommitted changes (validator-at-the-boundary -- don't
@@ -198,7 +198,7 @@ Cline process liveness on a fixed interval independent of any session, and
 already produces exactly the `stuckTaskCount`/`stuck`-per-item shape this
 need maps onto. It just doesn't know about `dispatch_coding_task`'s job-state
 directory yet, because that directory didn't exist before this spec. Tracked
-as AT-1231: add job entries to `supervision-status.json` alongside the
+as AT-1232: add job entries to `supervision-status.json` alongside the
 existing `tasks[]`/`orchestratorStates[]` arrays, using the same
 PID-liveness-plus-staleness logic as §3.1's repo-busy check.
 
@@ -310,16 +310,16 @@ kept here for spec-local traceability:
 
 All 13 tasks below are live Intake rows in `ai-task-queue.md`. AT-1219..1228
 landed with the first planning pass; AT-1229 (promote tool) was spawned by
-OQ-286's resolution; AT-1231/1232 (watcher extension, tier-naming
-reconciliation) were spawned by the second planning pass on AT-1228 itself.
+OQ-286's resolution; AT-1231/1232 (tier-naming reconciliation, watcher
+extension) were spawned by the second planning pass on AT-1228 itself.
 
 | # | Task | AT ID | Effort | Depends on |
 |---|------|-------|--------|------------|
-| 1 | `dispatch_coding_task(at_id, repo_root)` MCP tool -- serializes per repo (PID-liveness + staleness fallback), commits to a dedicated branch (not main), own job-state directory, requires `repo_root`, resolves model from the AT row's existing `Model:` annotation | AT-1228 | Medium | AT-1232 (naming) |
+| 1 | `dispatch_coding_task(at_id, repo_root)` MCP tool -- serializes per repo (PID-liveness + staleness fallback), commits to a dedicated branch (not main), own job-state directory, requires `repo_root`, resolves model from the AT row's existing `Model:` annotation | AT-1228 | Medium | AT-1231 (naming) |
 | 2 | `get_coding_task_status(job_id)` MCP tool | AT-1227 | Small | #1 |
 | 11 | `promote_coding_task(job_id)` MCP tool (spawned by OQ-286 Option B) | AT-1229 | Small-Medium | #1 |
-| 12 | Extend `supervision-watcher.ps1` to poll coding-task job state (S3.2b) | AT-1231 | Small | #1 |
-| 13 | Reconcile Tier-R/C/M vs. Level-1/2/3 naming between `ai-task-queue.md` and `ai-model-selection-policy.md` | AT-1232 | Tiny | -- |
+| 12 | Extend `supervision-watcher.ps1` to poll coding-task job state (S3.2b) | AT-1232 | Small | #1 |
+| 13 | Reconcile Tier-R/C/M vs. Level-1/2/3 naming between `ai-task-queue.md` and `ai-model-selection-policy.md` | AT-1231 | Tiny | -- |
 | 3 | Extend `dashboard_routes.py`/`dashboard.html` to list coding-task jobs | AT-1226 | Small-Medium | #1 |
 | 4 | Dedicated OQ UI with one-click resolve | AT-1225 | Medium | -- |
 | 5 | Cost chart + monthly spend projection | AT-1224 | Small-Medium | AT-1186 |

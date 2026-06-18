@@ -9,6 +9,26 @@
 **Companion doc:** [query-quality-checklists.md](../docs/query-quality-checklists.md) —
 per-tier checklists for query preparation and pre-escalation gates.
 
+**Terminology note (AT-1232, 2026-06-18):** this spec names its three tiers
+Level-1/Level-2/Level-3 (§5 below). `ai-task-queue.md`'s Task Authoring
+Policy header, and every AT row's `Model:` annotation written against it,
+instead uses **Tier-R / Tier-C / Tier-M**. The two namings drifted apart
+without either being updated to match the other. Mapping (1:1, same
+boundaries, no semantic change):
+
+| This spec | `ai-task-queue.md` |
+|---|---|
+| Level-1 (Routine) | Tier-R |
+| Level-2 (Complex) | Tier-C |
+| Level-3 (Research) | Tier-M |
+
+Any AT row's `Model: Tier-R/Tier-C/Tier-M` annotation should be read as
+referring to this spec's Level-1/2/3 respectively. New writing should prefer
+`Tier-R/C/M` to match the much larger body of existing AT rows; this spec's
+internal Level-1/2/3 naming is left as-is below rather than mass-renamed, to
+avoid churn risk in a long, heavily-cross-referenced document for a pure
+naming change.
+
 **Enablement framework:** [model-enablement-toolset-strategy.md](model-enablement-toolset-strategy.md)
 — the adjacent-toolset (MCP/RAG/decomposition/skills/validation/OQ) framework for raising a
 cheap model's *effective* tier ("SQEP enablement"). §7 of this policy's Level 2 default
