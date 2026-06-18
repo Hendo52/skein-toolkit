@@ -2109,7 +2109,14 @@ def _append_oq_row(row: str) -> bool:
     not the bottom. Returns False (and logs) if the separator can't be found --
     the caller must not silently lose an OQ it believes it raised. The "where
     in the text does this go" logic lives in ledger_io.insert_oq_row (unit
-    tested); this function is just the file I/O + path resolution around it."""
+    tested); this function is just the file I/O + path resolution around it.
+
+    Also bumps the doc's high-water-mark marker (CB-18 fix, see
+    ledger_io.next_oq_id) to this row's id, so a future next_oq_id() call
+    still skips this id even after the row itself is later deleted on
+    resolution. A missing marker line is logged, not silently ignored --
+    next_oq_id() falls back to its row-scan in that case, which is the
+    pre-fix (CB-18-prone) behavior."""
     path = _resolve(ORCHESTRATOR_OQ_LEDGER_PATH)
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -2117,6 +2124,11 @@ def _append_oq_row(row: str) -> bool:
     except Exception as e:
         print(f"[cfproxy][orchestrator] failed to read OQ doc to append a row: {e}", file=sys.stderr)
         return False
+    row_id_match = re.match(r"^\|\s*OQ-(\d+)\s*\|", row)
+    if row_id_match:
+        doc_text, bumped = ledger_io.bump_oq_high_water_mark(doc_text, int(row_id_match.group(1)))
+        if not bumped:
+            print(f"[cfproxy][orchestrator] OQ high-water-mark marker not found or not raised for {row_id_match.group(0)} -- next_oq_id() will rely on row-scan only", file=sys.stderr)
     new_text, inserted = ledger_io.insert_oq_row(doc_text, row)
     if not inserted:
         print("[cfproxy][orchestrator] OQ doc has no '|---' header separator -- refusing to guess where to insert", file=sys.stderr)

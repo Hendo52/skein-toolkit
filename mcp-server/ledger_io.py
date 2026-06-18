@@ -26,19 +26,47 @@ _OQ_TABLE_SEP_RE = re.compile(r"^\|\s*-{2,}")
 _OQ_TRAILING_DATE_RE = re.compile(r"\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*$")
 _OQ_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _HEADING_RE = re.compile(r"^#{1,6}\s")
+_OQ_HIGH_WATER_MARK_RE = re.compile(r"\*\*Highest OQ ID ever minted[^:]*:\*\*\s*(\d+)")
 
 
 def next_oq_id(oq_doc_text: str) -> int:
     """Pick the next free OQ id. The live sequence the architect works through
-    is contiguous in the low hundreds (currently topping out at OQ-258);
-    OQ-900 is a one-off from a different numbering context (a geometry/zone-
-    classification question raised 2026-05-09, well BEFORE OQ-258's 2026-05-28
-    -- ids here are not chronological). Minting OQ-901 next to that one-off
-    would start a second sequence; continuing the live one (OQ-259) is what an
-    architect skimming the table top-to-bottom would expect."""
+    is contiguous in the low hundreds; OQ-900 is a one-off from a different
+    numbering context (a geometry/zone-classification question raised
+    2026-05-09 -- ids here are not chronological). Minting OQ-901 next to that
+    one-off would start a second sequence; continuing the live one is what an
+    architect skimming the table top-to-bottom would expect.
+
+    CB-18 fix: a resolved OQ's row is meant to be deleted from the table (see
+    remove_oq_block), not left in place with an inline decision note -- but
+    that means a naive row-scan can no longer see the true historical max
+    once old rows are cleaned up, and would start re-minting already-used IDs.
+    The doc's '**Highest OQ ID ever minted...:** N' marker line is the
+    persistent source of truth that survives row deletion; live-table rows
+    are still scanned too (belt-and-suspenders for a doc where the marker
+    line was edited by hand and drifted) and the higher of the two wins."""
     ids = [int(m) for m in re.findall(r"^\|\s*OQ-(\d+)\s*\|", oq_doc_text, re.MULTILINE)]
     live_sequence = [i for i in ids if i < 500]
-    return (max(live_sequence) if live_sequence else max(ids, default=0)) + 1
+    row_max = max(live_sequence) if live_sequence else max(ids, default=0)
+    marker_match = _OQ_HIGH_WATER_MARK_RE.search(oq_doc_text)
+    marker_max = int(marker_match.group(1)) if marker_match else 0
+    return max(row_max, marker_max) + 1
+
+
+def bump_oq_high_water_mark(doc_text: str, oq_id: int) -> "tuple[str, bool]":
+    """Raise the doc's '**Highest OQ ID ever minted...:** N' marker to oq_id
+    if oq_id is higher than the current marker value. Returns (doc_text,
+    False) unchanged if no marker line is found, or if oq_id does not exceed
+    the current value -- the caller must not silently lose the marker."""
+    match = _OQ_HIGH_WATER_MARK_RE.search(doc_text)
+    if match is None:
+        return doc_text, False
+    current = int(match.group(1))
+    if oq_id <= current:
+        return doc_text, False
+    start, end = match.span(1)
+    new_text = doc_text[:start] + str(oq_id) + doc_text[end:]
+    return new_text, True
 
 
 def format_oq_row(oq_id: int, question: str, context: str, unblocks: str, date: str) -> str:

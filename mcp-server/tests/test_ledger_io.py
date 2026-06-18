@@ -47,6 +47,51 @@ class TestNextOqId(unittest.TestCase):
     def test_empty_doc_starts_at_one(self):
         self.assertEqual(ledger_io.next_oq_id(""), 1)
 
+    def test_uses_high_water_mark_when_rows_have_been_cleaned_up(self):
+        # CB-18: once resolved rows are deleted, the row-scan alone would
+        # under-count and re-mint an already-used id. The marker must win.
+        doc = (
+            "**Highest OQ ID ever minted (do not reuse below this number):** 284\n\n"
+            "| OQ-190 | only open row left | ctx | unblocks | 2026-04-30 |\n"
+        )
+        self.assertEqual(ledger_io.next_oq_id(doc), 285)
+
+    def test_row_scan_wins_when_higher_than_marker(self):
+        doc = (
+            "**Highest OQ ID ever minted (do not reuse below this number):** 5\n\n"
+            "| OQ-300 | a fresher row than the marker knows about | ctx | unblocks | 2026-06-18 |\n"
+        )
+        self.assertEqual(ledger_io.next_oq_id(doc), 301)
+
+    def test_missing_marker_falls_back_to_row_scan(self):
+        doc = "| OQ-5 | a | b | c | 2026-06-01 |\n"
+        self.assertEqual(ledger_io.next_oq_id(doc), 6)
+
+
+class TestBumpOqHighWaterMark(unittest.TestCase):
+    _DOC = "**Highest OQ ID ever minted (do not reuse below this number):** 284\n\nbody\n"
+
+    def test_raises_marker_when_new_id_is_higher(self):
+        new_doc, bumped = ledger_io.bump_oq_high_water_mark(self._DOC, 285)
+        self.assertTrue(bumped)
+        self.assertIn("Highest OQ ID ever minted (do not reuse below this number):** 285", new_doc)
+
+    def test_noop_when_new_id_not_higher(self):
+        new_doc, bumped = ledger_io.bump_oq_high_water_mark(self._DOC, 200)
+        self.assertFalse(bumped)
+        self.assertEqual(new_doc, self._DOC)
+
+    def test_noop_when_new_id_equal(self):
+        new_doc, bumped = ledger_io.bump_oq_high_water_mark(self._DOC, 284)
+        self.assertFalse(bumped)
+        self.assertEqual(new_doc, self._DOC)
+
+    def test_missing_marker_returns_unchanged_and_false(self):
+        doc = "no marker here\n"
+        new_doc, bumped = ledger_io.bump_oq_high_water_mark(doc, 300)
+        self.assertFalse(bumped)
+        self.assertEqual(new_doc, doc)
+
 
 class TestFormatOqRow(unittest.TestCase):
     def test_format(self):
