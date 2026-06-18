@@ -3,3 +3,4 @@ fastmcp
 httpx
 uvicorn
 starlette
+psutil
