@@ -279,6 +279,26 @@ class TestGitOperations(unittest.TestCase):
         self.assertEqual(dispatch_io.dispatch_branch_name(1228), "at-1228-dispatch")
 
 
+class TestSpawnClineProcess(unittest.TestCase):
+    def test_builds_expected_argv_and_passes_through_log_file_and_cwd(self):
+        fake_log_file = object()
+        with patch.object(dispatch_io.subprocess, "Popen") as mock_popen:
+            dispatch_io.spawn_cline_process(
+                "C:/run-cline.ps1", "C:/repo-wt", "claude/sonnet-4", "do the thing",
+                1200, fake_log_file, cwd="C:/mcp-server",
+            )
+        args, kwargs = mock_popen.call_args
+        argv = args[0]
+        self.assertEqual(argv[:4], ["powershell", "-NoProfile", "-File", "C:/run-cline.ps1"])
+        self.assertIn("-RepoRoot", argv)
+        self.assertIn("C:/repo-wt", argv)
+        self.assertIn("-Model", argv)
+        self.assertIn("claude/sonnet-4", argv)
+        self.assertIn("-AutoApprove", argv)
+        self.assertIs(kwargs["stdout"], fake_log_file)
+        self.assertEqual(kwargs["cwd"], "C:/mcp-server")
+
+
 class TestKillJobProcessTree(unittest.TestCase):
     def test_uses_taskkill_with_force_and_tree_flags(self):
         with patch.object(dispatch_io.subprocess, "run") as mock_run:

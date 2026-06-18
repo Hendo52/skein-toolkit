@@ -21,6 +21,7 @@ point this server at a different project checkout.
 
 import os
 import subprocess
+import time
 import sys
 
 # ledger_io.py is a sibling module with the pure OQ/AT ledger-text functions
@@ -29,6 +30,7 @@ import sys
 # and when a test loads it via importlib.util.spec_from_file_location.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_io
+import dispatch_io  # AT-1228: model resolution, job state, git ops for dispatch_coding_task
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -2548,6 +2550,226 @@ def create_actionable_task(
         return "ERROR: failed to append AT row -- see server log for details"
     print(f"[cfproxy][taskqueue] AT-{at_id} appended to markdown queue {path} (Odysseus Notes mode inactive)", file=sys.stderr)
     return f"AT-{at_id}"
+
+
+# AT-1228/1227/1230: coding-task dispatch. Job state lives in its own
+# directory (OQ-287), separate from ORCHESTRATOR_OQ_LEDGER_PATH's
+# ~/.cf_proxy_orchestrator/ -- these are a different kind of job (a whole
+# Cline run against an AT, not a single orchestrated step).
+CODING_TASK_STATE_DIR = os.environ.get(
+    "CODING_TASK_STATE_DIR", os.path.join(os.path.expanduser("~"), ".coding_task_dispatch")
+)
+RUN_CLINE_SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run-cline.ps1")
+DEFAULT_DISPATCH_TIMEOUT_SECONDS = 1200
+
+
+@mcp.tool()
+async def dispatch_coding_task(at_id: int, repo_root: str) -> str:
+    """Dispatches a Cline CLI coding-agent run against AT-<at_id>, isolated
+    in its own git worktree on a dedicated branch (at-<at_id>-dispatch), and
+    returns immediately with a job_id once the run is launched in the
+    background. Poll get_coding_task_status(job_id) for progress;
+    promote_coding_task(job_id) merges the result once it's done.
+
+    Resolved design (odysseus-agentic-dispatch-architecture.md S3.1):
+    - repo_root must exist and be a git repository.
+    - AT-<at_id> must exist in ai-task-queue.md and carry a "Model: Tier-X"
+      annotation -- no guessed default if it's missing.
+    - repo_root must have a clean working tree; if dirty, raises an OQ via
+      create_open_question (the existing escalation path) rather than
+      silently proceeding or silently refusing.
+    - repo_root must not already have a running job (OQ-285: one job at a
+      time per repo).
+    - At least one of the tier's candidate models must respond to a live
+      LiteLLM probe; if every candidate fails, returns an ERROR naming all
+      of them.
+    - Uses git worktree (not checkout -b) so the job's branch switch never
+      disturbs whatever the shared working directory currently has checked
+      out."""
+    if not os.path.isdir(repo_root):
+        return f"ERROR: repo_root does not exist: {repo_root}"
+    if not os.path.isdir(os.path.join(repo_root, ".git")):
+        return f"ERROR: repo_root is not a git repository (no .git): {repo_root}"
+
+    queue_path = _resolve(AT_QUEUE_PATH)
+    try:
+        with open(queue_path, "r", encoding="utf-8") as f:
+            queue_text = f.read()
+    except Exception as e:
+        return f"ERROR: could not read AT queue at {queue_path}: {e}"
+
+    at_row = ledger_io.parse_at_row(queue_text, at_id)
+    if at_row is None:
+        return f"ERROR: AT-{at_id} not found in {queue_path}"
+    if at_row["model_tier"] is None:
+        return (
+            f"ERROR: AT-{at_id} has no 'Model: Tier-X' annotation -- cannot resolve a model "
+            f"without one (no guessed default; see ai-model-selection-policy.md S11.2)"
+        )
+
+    busy_job_id = dispatch_io.find_busy_job_for_repo(CODING_TASK_STATE_DIR, repo_root)
+    if busy_job_id is not None:
+        return (
+            f"ERROR: {repo_root} already has a running job ({busy_job_id}) -- OQ-285: one job "
+            f"at a time per repo. Check get_coding_task_status('{busy_job_id}') or wait for it "
+            f"to finish."
+        )
+
+    clean, dirty_detail = dispatch_io.is_working_tree_clean(repo_root)
+    if not clean:
+        oq_id = create_open_question(
+            question=(
+                f"dispatch_coding_task(AT-{at_id}, {repo_root}) found the target repo has "
+                f"uncommitted changes. The job runs in an isolated git worktree, so it will not "
+                f"touch these files either way -- but proceeding leaves them uncommitted "
+                f"alongside whatever the job produces, while waiting defers dispatch until "
+                f"they're committed/stashed. Options: (A) proceed anyway -- the dirty files are "
+                f"unrelated to this job's isolated worktree; (B) hold dispatch until the working "
+                f"tree is clean. Dirty files:\n{dirty_detail[:1000]}"
+            ),
+            options=[
+                "A: Proceed anyway -- isolated worktree, dirty files are unrelated",
+                "B: Hold dispatch until the working tree is clean",
+            ],
+            preemptive_answer="B: Hold dispatch until the working tree is clean",
+            preemptive_reasoning=(
+                "An ambiguous base state risks a misleading mental model of what's actually "
+                "committed even though the job's own changes are isolated; resolved as a "
+                "working-tree precondition in odysseus-agentic-dispatch-architecture.md S3.1."
+            ),
+            reversibility="Reversible",
+            context_spec="odysseus-agentic-dispatch-architecture.md S3.1 (working-tree precondition)",
+            unblocks=f"AT-{at_id} dispatch",
+            precedent_search_note="OQ-285/286/287/288/289 (this dispatch tool's own prior planning)",
+        )
+        return f"ERROR: {repo_root} has uncommitted changes -- raised {oq_id} rather than guessing. Dirty files: {dirty_detail[:500]}"
+
+    master_key = dispatch_io.load_litellm_master_key(os.path.dirname(os.path.abspath(__file__)))
+    model, attempted = await dispatch_io.resolve_model_for_tier(at_row["model_tier"], master_key)
+    if model is None:
+        return f"ERROR: no model responded for {at_row['model_tier']} -- attempted {attempted}. Check toolchain-doctor.ps1."
+
+    job_id = dispatch_io.new_job_id(at_id)
+    branch_name = dispatch_io.dispatch_branch_name(at_id)
+    abs_repo_root = os.path.abspath(repo_root)
+    worktree_path = os.path.join(
+        os.path.dirname(abs_repo_root), f"{os.path.basename(abs_repo_root)}-at-{at_id}-dispatch"
+    )
+    if os.path.exists(worktree_path):
+        return (
+            f"ERROR: worktree path already exists: {worktree_path} -- a prior dispatch for "
+            f"AT-{at_id} may not have been cleaned up (promote_coding_task removes it on success)"
+        )
+
+    base_branch_result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root, capture_output=True, text=True, timeout=15,
+    )
+    base_branch = base_branch_result.stdout.strip() or "HEAD"
+
+    ok, err = dispatch_io.create_worktree(repo_root, worktree_path, branch_name)
+    if not ok:
+        return f"ERROR: git worktree add failed: {err}"
+
+    task_prompt = dispatch_io.build_task_prompt(at_id, at_row, worktree_path)
+    os.makedirs(CODING_TASK_STATE_DIR, exist_ok=True)
+    log_path = os.path.join(CODING_TASK_STATE_DIR, f"{job_id}.log")
+
+    log_file = open(log_path, "w", encoding="utf-8")
+    try:
+        proc = dispatch_io.spawn_cline_process(
+            RUN_CLINE_SCRIPT_PATH, worktree_path, model, task_prompt,
+            DEFAULT_DISPATCH_TIMEOUT_SECONDS, log_file,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+    except Exception as e:
+        dispatch_io.remove_worktree(repo_root, worktree_path, force=True)
+        return f"ERROR: failed to spawn run-cline.ps1: {e}"
+    finally:
+        # The child inherits its own duplicated handle to log_path via
+        # stdout=log_file -- this parent-side handle is safe to close
+        # immediately rather than leaking it for the rest of this long-
+        # running MCP server process's lifetime.
+        log_file.close()
+
+    dispatch_io.write_job_state(CODING_TASK_STATE_DIR, job_id, {
+        "job_id": job_id,
+        "at_id": at_id,
+        "repo_root": abs_repo_root,
+        "worktree_path": worktree_path,
+        "branch_name": branch_name,
+        "base_branch": base_branch,
+        "model": model,
+        "model_attempts": attempted,
+        "pid": proc.pid,
+        "status": "running",
+        "log_path": log_path,
+        "started_at": time.time(),
+        "updated_at": time.time(),
+    })
+    print(
+        f"[cfproxy][dispatch] {job_id}: AT-{at_id} dispatched to {model} in worktree "
+        f"{worktree_path} (pid {proc.pid})",
+        file=sys.stderr,
+    )
+    return job_id
+
+
+@mcp.tool()
+def get_coding_task_status(job_id: str) -> str:
+    """Reports the current status of a job started by dispatch_coding_task.
+    If the recorded PID is no longer alive, this call also updates the job
+    state from "running" to "complete" or "failed" (failed if the worktree
+    branch has no commits beyond the base, complete otherwise) -- status
+    transitions happen lazily, on the next poll, rather than via a separate
+    watcher process (AT-1227's resolved scope; a watcher is OQ-289's
+    separate, not-yet-built supervisor layer)."""
+    state = dispatch_io.read_job_state(CODING_TASK_STATE_DIR, job_id)
+    if state is None:
+        return f"ERROR: no job found with id {job_id}"
+
+    if state.get("status") == "running" and not dispatch_io.is_pid_alive(state.get("pid")):
+        worktree_path = state.get("worktree_path", "")
+        base_branch = state.get("base_branch", "")
+        commit_count = "unknown"
+        has_new_commits = False
+        try:
+            # Compare against base_branch, not "does the branch have any
+            # commits" -- every branch has at least the seed/base commit,
+            # so that check is always true and would never report "failed".
+            result = subprocess.run(
+                ["git", "log", "--oneline", f"{base_branch}..HEAD", "-5"],
+                cwd=worktree_path, capture_output=True, text=True, timeout=15,
+            )
+            commit_count = result.stdout.strip()
+            has_new_commits = bool(result.stdout.strip())
+        except Exception as e:
+            commit_count = f"(could not check: {e})"
+        state["status"] = "complete" if has_new_commits else "failed"
+        state["recent_commits"] = commit_count
+        state["updated_at"] = time.time()
+        dispatch_io.write_job_state(CODING_TASK_STATE_DIR, job_id, state)
+
+    log_tail = ""
+    log_path = state.get("log_path")
+    if log_path and os.path.isfile(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            log_tail = "".join(lines[-30:])
+        except Exception:
+            log_tail = "(could not read log)"
+
+    return (
+        f"job_id: {job_id}\n"
+        f"AT-{state.get('at_id')}\n"
+        f"status: {state.get('status')}\n"
+        f"model: {state.get('model')}\n"
+        f"repo_root: {state.get('repo_root')}\n"
+        f"worktree_path: {state.get('worktree_path')}\n"
+        f"branch_name: {state.get('branch_name')}\n"
+        f"recent_commits: {state.get('recent_commits', '(job still running)')}\n"
+        f"--- log tail ---\n{log_tail}"
+    )
 
 
 _ORCHESTRATOR_STEP_SYSTEM_PROMPT = (

@@ -286,6 +286,48 @@ def remove_worktree(repo_root: str, worktree_path: str, force: bool = False) -> 
 
 
 # ---------------------------------------------------------------------------
+# Cline process spawn
+# ---------------------------------------------------------------------------
+
+
+def spawn_cline_process(
+    run_cline_script: str,
+    repo_root: str,
+    model: str,
+    task_prompt: str,
+    timeout_sec: int,
+    log_file,
+    cwd: str,
+) -> subprocess.Popen:
+    """The one and only subprocess.Popen call site for a dispatched job --
+    kept in its own function (not inlined at the call site in local-mcp.py)
+    specifically so tests can mock this one function instead of
+    subprocess.Popen itself. Mocking subprocess.Popen directly breaks
+    subprocess.run too (CPython's subprocess.run is implemented via Popen
+    internally, and they're the same shared module-level symbol) -- found
+    while writing this module's own test suite: a test that mocked
+    subprocess.Popen to avoid spawning a real Cline process also corrupted
+    every git status/git worktree subprocess.run call made during the same
+    test, with a confusing unrelated-looking "not enough values to unpack"
+    error. Returns a non-blocking, already-started process (run-cline.ps1's
+    own toolchain-doctor preflight and Cline invocation happen in that
+    spawned process, not here)."""
+    return subprocess.Popen(
+        [
+            "powershell", "-NoProfile", "-File", run_cline_script,
+            "-RepoRoot", repo_root,
+            "-Model", model,
+            "-Task", task_prompt,
+            "-TimeoutSec", str(timeout_sec),
+            "-AutoApprove",
+        ],
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        cwd=cwd,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Process tree kill (CB-25)
 # ---------------------------------------------------------------------------
 
