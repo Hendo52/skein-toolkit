@@ -15,4 +15,17 @@ if (-not (Test-Path $esPy)) {
 
 $host.UI.RawUI.WindowTitle = "Skein MCP Server"
 Write-Host "Starting Skein MCP Server (http://127.0.0.1:3100/sse)" -ForegroundColor Cyan
+
+# WORKSPACE_ROOT was never set here (found 2026-06-18 while smoke-testing
+# dispatch_coding_task): local-mcp.py's WORKSPACE defaults to the parent of
+# its own script directory, i.e. skein-toolkit itself, which has no
+# architecture-docs/ at all. Every WORKSPACE-relative tool
+# (create_actionable_task, create_open_question, run_shell with no cwd,
+# fs_read_file/fs_write_file with a relative path) has been silently
+# targeting the wrong repo on every real invocation since this script was
+# written -- never caught before because this session's own OQ/AT writes
+# always went through direct file edits or ledger_io calls with an
+# explicit, correct path, not through this server's actual tool-call path.
+$env:WORKSPACE_ROOT = "c:\Users\jakeh\source\repos\Electron-Splines"
+
 & $esPy $McpScript

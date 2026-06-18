@@ -42,6 +42,16 @@ $LocalMcpScript = Join-Path $PSScriptRoot "local-mcp.py"
 $LiteLlmLogDir  = Join-Path $env:USERPROFILE ".litellm"
 $ClineSettings  = Join-Path $env:APPDATA "Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json"
 
+# WORKSPACE_ROOT (found 2026-06-18 while smoke-testing dispatch_coding_task):
+# local-mcp.py's WORKSPACE defaults to the parent of its own script
+# directory, i.e. this repo (skein-toolkit) itself, which has no
+# architecture-docs/ at all -- every WORKSPACE-relative tool
+# (create_actionable_task, create_open_question, run_shell with no cwd)
+# silently targets the wrong repo unless this is set. start-skein.ps1 sets
+# it for a fresh launch; this script's own restart path (Start-
+# LocalMcpAndWait) needs the same fix, since it bypasses start-skein.ps1.
+$WorkspaceRoot = "c:\Users\jakeh\source\repos\Electron-Splines"
+
 Write-Host ""
 Write-Host "AI Toolchain Doctor" -ForegroundColor Cyan
 Write-Host "===================" -ForegroundColor Cyan
@@ -182,6 +192,11 @@ function Start-LocalMcpAndWait {
     param([int]$TimeoutSeconds = 20)
     $outLog = Join-Path $RepoRoot "cf_proxy_live.log"
     $errLog = Join-Path $RepoRoot "cf_proxy_live.err.log"
+    # Child processes inherit the parent's environment by default --
+    # setting this here (rather than relying on Start-Process's own,
+    # PowerShell-7-only -Environment parameter) reaches local-mcp.py
+    # regardless of PowerShell version.
+    $env:WORKSPACE_ROOT = $WorkspaceRoot
     Start-Process -FilePath $VenvPython -ArgumentList "`"$LocalMcpScript`"" -WorkingDirectory $RepoRoot `
         -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
 
