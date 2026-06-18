@@ -290,28 +290,58 @@ kept here for spec-local traceability:
    **(B)** block `dispatch_coding_task` entirely until multi-repo AT
    awareness exists. **Resolved: Option A.**
 
-### 7.1 Open question raised by the second planning pass (2026-06-18) -- not yet resolved
+### 7.1 Supervisor-agent escalation -- resolved 2026-06-18 (OQ-289)
 
-5. **Supervisor-agent escalation (OQ-289, open).** Should blocking conditions
-   (e.g. §3.1's working-tree precondition) route through a new automated
+5. **Supervisor-agent escalation (OQ-289).** Should blocking conditions (e.g.
+   §3.1's working-tree precondition) route through a new automated
    "supervisor agent" triage layer instead of straight to a human-facing OQ?
-   Options: **(A)** no new layer -- use the existing `create_open_question`
-   path. **(B)** a standing supervisor process (extending
-   `supervision-watcher.ps1`, §3.2b) triages what it safely can and escalates
-   only what it can't -- not fully specified by naming it. **(C)** defer --
-   ship with Option A now, keep the question open for when job volume
-   justifies building a supervisor layer. **Preemptive answer: C** -- Option
-   B is the clear end state but isn't specified well enough to build yet.
-   AT-1228 does not block on this.
+   **Resolved: Option B, refined and specified** (the architect supplied the
+   missing specification this OQ originally lacked) -- see §3.5 for the
+   resulting two-tier design. AT-1228 still does not block on this; the
+   working-tree precondition continues to use the plain OQ path until AT-1233
+   lands.
+
+### 3.5 The two-tier supervisor design (OQ-289's resolution)
+
+The apparent tension in the architect's own framing -- "use the most capable
+model for judgment calls" vs. "cannot afford to waste tokens" -- resolves to:
+**invoke the expensive model rarely, not the cheap model constantly.**
+
+- **Tier 1 (cheap, continuous):** `supervision-watcher.ps1` (AT-1168,
+  extended by AT-1232) polls mechanically on a fixed interval. A PowerShell
+  script costs nothing per check, independent of any LLM session. It already
+  produces exactly the needed signal: `stuckTaskCount`, and per-job `status`/
+  `stuck` flags.
+- **Tier 2 (expensive, event-driven):** the supervisor LLM (the most capable
+  model available -- the architect's reasoning: the decision of *which*
+  corrective action fits a given failure is genuinely hard to template, so
+  this is not where to economize on capability) sleeps between checks. It
+  wakes on a schedule -- `ScheduleWakeup` for a live conversation session,
+  a standing `CronCreate` routine for the fully-unattended case -- reads
+  **only** the Tier 1 log (`supervision-status.json`), and if
+  `stuckTaskCount == 0`, goes back to sleep immediately. This is the actual
+  cost-control mechanism: a wake cycle with nothing to act on costs one
+  cheap file read, not a full context re-derivation.
+- **Decision menu, exercised only on a flagged event** (mirrors
+  troubleshooting moves already used manually this session): **(1) retry**
+  -- re-dispatch the same AT, optionally with backoff (CB-23's pattern).
+  **(2) restart a dependency** -- the toolchain itself is stale/unhealthy,
+  run `toolchain-doctor.ps1` first (CB-15/CB-24's pattern). **(3) revert**
+  -- the job's branch made a mess, discard it and re-dispatch clean.
+  **(4) stop and raise an OQ** -- the failure doesn't match any of the
+  above, needs an actual architect decision. Tracked as AT-1233: build the
+  wake mechanism and document the triage logic for choosing between these
+  four, not just the mechanism itself.
 
 ---
 
-## 8. AT tasks spawned by this spec -- live as AT-1219..1232
+## 8. AT tasks spawned by this spec -- live as AT-1219..1233
 
-All 13 tasks below are live Intake rows in `ai-task-queue.md`. AT-1219..1228
+All 14 tasks below are live Intake rows in `ai-task-queue.md`. AT-1219..1228
 landed with the first planning pass; AT-1229 (promote tool) was spawned by
 OQ-286's resolution; AT-1231/1232 (tier-naming reconciliation, watcher
-extension) were spawned by the second planning pass on AT-1228 itself.
+extension) were spawned by the second planning pass on AT-1228 itself;
+AT-1233 (supervisor wake-loop) was spawned by OQ-289's resolution (§3.5).
 
 | # | Task | AT ID | Effort | Depends on |
 |---|------|-------|--------|------------|
@@ -319,7 +349,8 @@ extension) were spawned by the second planning pass on AT-1228 itself.
 | 2 | `get_coding_task_status(job_id)` MCP tool | AT-1227 | Small | #1 |
 | 11 | `promote_coding_task(job_id)` MCP tool (spawned by OQ-286 Option B) | AT-1229 | Small-Medium | #1 |
 | 12 | Extend `supervision-watcher.ps1` to poll coding-task job state (S3.2b) | AT-1232 | Small | #1 |
-| 13 | Reconcile Tier-R/C/M vs. Level-1/2/3 naming between `ai-task-queue.md` and `ai-model-selection-policy.md` | AT-1231 | Tiny | -- |
+| 13 | Reconcile Tier-R/C/M vs. Level-1/2/3 naming between `ai-task-queue.md` and `ai-model-selection-policy.md` | AT-1231 | Tiny | -- (Done) |
+| 14 | Supervisor wake-loop + four-item decision menu (S3.5) | AT-1233 | Medium | AT-1232 |
 | 3 | Extend `dashboard_routes.py`/`dashboard.html` to list coding-task jobs | AT-1226 | Small-Medium | #1 |
 | 4 | Dedicated OQ UI with one-click resolve | AT-1225 | Medium | -- |
 | 5 | Cost chart + monthly spend projection | AT-1224 | Small-Medium | AT-1186 |
@@ -329,13 +360,15 @@ extension) were spawned by the second planning pass on AT-1228 itself.
 | 9 | xterm.js live-terminal-streaming spike | AT-1220 | Medium | #1 |
 | 10 | Resolve the SR-1.4 taxonomy mismatch (§9) | AT-1219 | Small | -- |
 
-**Running count: 5 OQs total (4 resolved, OQ-289 open) + 13 ATs** -- up from
-the first pass's 4+11 estimate. This is the recursive-convergence pattern
-`task-and-oq-authoring-standard.md` Part 3 describes working as intended:
-each planning pass on the central tool (AT-1228) surfaced real prior art
-(the model-selection policy, the supervision watcher) and one genuinely new
-open question (OQ-289), not a sign the plan was wrong. Expect at least one
-more pass once AT-1228 is actually implemented and run against a real AT.
+**Running count: 5 OQs total (all resolved) + 14 ATs (3 Done: AT-1219,
+AT-1222, AT-1231)** -- up from the first pass's 4+11 estimate. This is the
+recursive-convergence pattern `task-and-oq-authoring-standard.md` Part 3
+describes working as intended: each planning pass on the central tool
+(AT-1228) surfaced real prior art (the model-selection policy, the
+supervision watcher) and one genuinely new open question (OQ-289, resolved
+the same day once the architect supplied the missing specification), not a
+sign the plan was wrong. Expect at least one more pass once AT-1228 is
+actually implemented and run against a real AT.
 
 ---
 
