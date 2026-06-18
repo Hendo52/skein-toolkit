@@ -2772,6 +2772,169 @@ def get_coding_task_status(job_id: str) -> str:
     )
 
 
+@mcp.tool()
+def promote_coding_task(job_id: str) -> str:
+    """Promotes a completed coding-task job by merging its dispatch branch
+    into the target repo's default branch, then cleaning up the worktree.
+    This is the explicit human-approval step OQ-286 requires: the architect
+    reviews via get_coding_task_status(job_id)'s diff summary (or a richer
+    Monaco diff view, AT-1221) before calling this.
+
+    Validator-at-the-boundary: rejects with a clear error if the job is
+    still running, failed, or was already promoted -- only a job whose
+    status is exactly 'complete' can be promoted.
+
+    On success:
+      - Fast-forward merges the job's dispatch branch into the repo's
+        default branch (the branch the main worktree had checked out when
+        dispatch_coding_task ran, recorded in the job state as base_branch).
+      - Removes the git worktree (dispatch_coding_task created it; this
+        tool removes it per odysseus-agentic-dispatch-architecture.md S3.1).
+      - Deletes the local dispatch branch (it is merged; no orphaned refs).
+      - Updates the job state to status='promoted'.
+
+    Spec: odysseus-agentic-dispatch-architecture.md S3.2a (AT-1229/AT-1230,
+    OQ-286 Option B)."""
+    state = dispatch_io.read_job_state(CODING_TASK_STATE_DIR, job_id)
+    if state is None:
+        return f"ERROR: no job found with id {job_id!r}"
+
+    status = state.get("status", "")
+    at_id = state.get("at_id", "?")
+
+    # Validator-at-the-boundary: only 'complete' jobs can be promoted.
+    if status == "running":
+        return (
+            f"ERROR: job {job_id!r} (AT-{at_id}) is still running -- wait for it "
+            f"to finish before promoting. Use get_coding_task_status('{job_id}') "
+            f"to check progress."
+        )
+    if status == "failed":
+        return (
+            f"ERROR: job {job_id!r} (AT-{at_id}) has status 'failed' -- the agent "
+            f"did not produce any commits on the dispatch branch. Promotion is not "
+            f"possible. Review the log via get_coding_task_status('{job_id}') and "
+            f"re-dispatch if needed."
+        )
+    if status == "promoted":
+        promoted_at = state.get("promoted_at", "(unknown time)")
+        merged_sha = state.get("merged_sha", "(unknown)")
+        return (
+            f"ERROR: job {job_id!r} (AT-{at_id}) was already promoted "
+            f"(promoted_at={promoted_at}, merged_sha={merged_sha}). "
+            f"Nothing to do."
+        )
+    if status != "complete":
+        return (
+            f"ERROR: job {job_id!r} (AT-{at_id}) has unexpected status {status!r}. "
+            f"Only jobs with status='complete' can be promoted."
+        )
+
+    repo_root = state.get("repo_root", "")
+    worktree_path = state.get("worktree_path", "")
+    branch_name = state.get("branch_name", "")
+    base_branch = state.get("base_branch", "")
+
+    if not repo_root or not os.path.isdir(repo_root):
+        return (
+            f"ERROR: job {job_id!r} (AT-{at_id}) has a missing or inaccessible "
+            f"repo_root: {repo_root!r}. Cannot merge."
+        )
+    if not branch_name:
+        return f"ERROR: job {job_id!r} (AT-{at_id}) has no branch_name recorded. Cannot merge."
+
+    # Resolve target branch: prefer the recorded base_branch (set at dispatch
+    # time -- the most reliable record of what the repo's HEAD was at that
+    # moment); fall back to querying the current HEAD if not recorded.
+    if base_branch:
+        default_branch = base_branch
+    else:
+        default_branch, err = dispatch_io.get_default_branch(repo_root)
+        if not default_branch:
+            return (
+                f"ERROR: could not determine the default branch of {repo_root!r}: {err}. "
+                f"Set base_branch in the job state manually or re-dispatch."
+            )
+
+    # Merge the dispatch branch into the default branch.
+    ok, merge_out = dispatch_io.merge_branch_into_default(
+        repo_root, branch_name, default_branch
+    )
+    if not ok:
+        return (
+            f"ERROR: merge of {branch_name!r} into {default_branch!r} failed for job "
+            f"{job_id!r} (AT-{at_id}): {merge_out}. The dispatch branch and worktree "
+            f"are untouched -- review, resolve, and retry."
+        )
+
+    # Read the resulting HEAD SHA so we can record it in the state.
+    sha_result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root, capture_output=True, text=True, timeout=15,
+    )
+    merged_sha = sha_result.stdout.strip() or "(unknown)"
+
+    # Remove the worktree (per spec S3.1: promote_coding_task removes it).
+    # Not a hard failure if it's already gone -- the merge succeeded, which
+    # is the critical step; a leftover worktree path is cosmetic.
+    wt_removed = False
+    wt_remove_note = ""
+    if worktree_path and os.path.isdir(worktree_path):
+        wt_ok, wt_err = dispatch_io.remove_worktree(repo_root, worktree_path, force=True)
+        if wt_ok:
+            wt_removed = True
+        else:
+            wt_remove_note = (
+                f" (WARNING: git worktree remove failed: {wt_err}"
+                f" -- remove {worktree_path!r} manually)"
+            )
+            print(
+                f"[cfproxy][promote] {job_id}: worktree remove failed"
+                f" for {worktree_path!r}: {wt_err}",
+                file=sys.stderr,
+            )
+    else:
+        wt_removed = True  # already gone or never created (edge case)
+
+    # Delete the local branch (already merged; -d is safe).
+    branch_note = ""
+    br_ok, br_err = dispatch_io.delete_local_branch(repo_root, branch_name)
+    if not br_ok:
+        branch_note = (
+            f" (WARNING: git branch -d {branch_name!r} failed: {br_err}"
+            f" -- delete manually)"
+        )
+        print(
+            f"[cfproxy][promote] {job_id}: branch delete failed"
+            f" for {branch_name!r}: {br_err}",
+            file=sys.stderr,
+        )
+
+    # Update job state to promoted.
+    state["status"] = "promoted"
+    state["promoted_at"] = time.time()
+    state["merged_sha"] = merged_sha
+    state["merged_into"] = default_branch
+    state["worktree_removed"] = wt_removed
+    state["updated_at"] = time.time()
+    dispatch_io.write_job_state(CODING_TASK_STATE_DIR, job_id, state)
+
+    print(
+        f"[cfproxy][promote] {job_id}: AT-{at_id} merged {branch_name!r}"
+        f" -> {default_branch!r} at {merged_sha[:12]}",
+        file=sys.stderr,
+    )
+    return (
+        f"promoted: job {job_id} (AT-{at_id})\n"
+        f"merged: {branch_name} -> {default_branch}\n"
+        f"sha: {merged_sha}\n"
+        f"worktree removed: {wt_removed}\n"
+        f"git output: {merge_out}"
+        f"{wt_remove_note}{branch_note}"
+    )
+
+
+
 _ORCHESTRATOR_STEP_SYSTEM_PROMPT = (
     "You are executing exactly ONE step of a pre-approved, decomposed plan -- "
     "and only this step. Do not start later steps even if you can infer what "

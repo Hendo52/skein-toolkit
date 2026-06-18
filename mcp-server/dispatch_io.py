@@ -361,6 +361,95 @@ def kill_job_process_tree(pid: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Promote / merge (AT-1230)
+# ---------------------------------------------------------------------------
+
+
+def get_default_branch(repo_root: str) -> "tuple[str, str]":
+    """Returns (branch_name, error_message). branch_name is the HEAD branch
+    of the main working tree (i.e. whatever the original repo root currently
+    has checked out -- the one that was current when dispatch_coding_task ran).
+    Uses git symbolic-ref --short HEAD; falls back to rev-parse --abbrev-ref
+    HEAD for detached-HEAD cases. Returns ("", error) if both fail."""
+    for args in (
+        ["git", "symbolic-ref", "--short", "HEAD"],
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+    ):
+        try:
+            result = subprocess.run(
+                args, cwd=repo_root, capture_output=True, text=True, timeout=15
+            )
+            branch = result.stdout.strip()
+            if branch and branch != "HEAD":
+                return branch, ""
+        except Exception:
+            pass
+    return "", "could not determine default branch (is the repo in detached HEAD state?)"
+
+
+def merge_branch_into_default(
+    repo_root: str,
+    branch_name: str,
+    default_branch: str,
+) -> "tuple[bool, str]":
+    """Fast-forward the dispatch branch into default_branch inside the
+    MAIN working tree (repo_root, not the worktree). Steps:
+      1. git checkout <default_branch>   -- switch the main worktree to target
+      2. git merge --ff-only <branch_name>  -- fast-forward only (the dispatch
+         worktree commits stack cleanly on top of the point it branched from,
+         so a fast-forward is always correct here; if it fails that means
+         something committed to the default branch concurrently, which is a
+         genuine conflict worth surfacing rather than auto-resolving)
+    Returns (True, merge_output) on success, (False, error_message) on any
+    failure -- the caller must surface failures clearly, not swallow them."""
+    # Step 1: switch the main worktree to the target branch.
+    co_result = subprocess.run(
+        ["git", "checkout", default_branch],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if co_result.returncode != 0:
+        return False, f"git checkout {default_branch} failed: {co_result.stderr.strip()}"
+
+    # Step 2: fast-forward merge.
+    merge_result = subprocess.run(
+        ["git", "merge", "--ff-only", branch_name],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if merge_result.returncode != 0:
+        return False, (
+            f"git merge --ff-only {branch_name} failed: "
+            f"{merge_result.stderr.strip() or merge_result.stdout.strip()}"
+        )
+    return True, merge_result.stdout.strip() or merge_result.stderr.strip()
+
+
+def delete_local_branch(repo_root: str, branch_name: str) -> "tuple[bool, str]":
+    """git branch -d <branch_name> -- deletes the local branch after merge.
+    Uses -d (safe delete, refuses if not merged) rather than -D (force);
+    promote_coding_task calls this AFTER a successful merge, so -d is always
+    safe: the branch IS merged. Returns (True, "") on success,
+    (False, stderr) on failure -- a stale branch left behind after a
+    successful merge is annoying but not a blocker, so callers log and
+    continue rather than treating it as a hard error."""
+    result = subprocess.run(
+        ["git", "branch", "-d", branch_name],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        return False, result.stderr.strip()
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
 # Task prompt construction
 # ---------------------------------------------------------------------------
 

@@ -253,6 +253,163 @@ class TestGetCodingTaskStatus(unittest.TestCase):
         finally:
             shutil.rmtree(repo, ignore_errors=True)
 
+class TestPromoteCodingTask(unittest.TestCase):
+    """Tests for promote_coding_task (AT-1230). Uses real temp git repos so
+    that the git merge/worktree operations are exercised end-to-end, the same
+    way TestGetCodingTaskStatus uses real repos for commit-count checks."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._orig_state_dir = local_mcp.CODING_TASK_STATE_DIR
+        local_mcp.CODING_TASK_STATE_DIR = self._tmpdir
+        self._repos_to_clean = []
+
+    def tearDown(self):
+        local_mcp.CODING_TASK_STATE_DIR = self._orig_state_dir
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+        for repo in self._repos_to_clean:
+            shutil.rmtree(repo, ignore_errors=True)
+
+    def _make_repo_with_dispatch_branch(self):
+        """Returns (repo_root, base_branch, worktree_path, branch_name).
+        The dispatch branch has one commit beyond base and a worktree is
+        attached at worktree_path -- the exact post-dispatch_coding_task
+        state that promote_coding_task expects to receive."""
+        repo = _init_real_git_repo()
+        self._repos_to_clean.append(repo)
+
+        base_branch = subprocess.run(
+            ["git", "symbolic-ref", "--short", "HEAD"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        branch_name = "at-1228-dispatch"
+        worktree_path = repo + "-wt-promote-test"
+        self._repos_to_clean.append(worktree_path)
+
+        ok, err = local_mcp.dispatch_io.create_worktree(repo, worktree_path, branch_name)
+        self.assertTrue(ok, f"create_worktree failed: {err}")
+
+        # Write a commit on the dispatch branch (inside the worktree)
+        with open(os.path.join(worktree_path, "feature.txt"), "w", encoding="utf-8") as f:
+            f.write("implemented\n")
+        subprocess.run(["git", "add", "feature.txt"], cwd=worktree_path, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "feat: implement the feature"],
+            cwd=worktree_path, check=True,
+        )
+
+        return repo, base_branch, worktree_path, branch_name
+
+    # ------------------------------------------------------------------
+    # Guard-clause tests (validator-at-the-boundary per exit evidence)
+    # ------------------------------------------------------------------
+
+    def test_unknown_job_id_returns_error(self):
+        result = local_mcp.promote_coding_task("does-not-exist")
+        self.assertTrue(result.startswith("ERROR:"))
+        self.assertIn("no job found", result)
+
+    def test_running_job_rejected_with_clear_error(self):
+        local_mcp.dispatch_io.write_job_state(self._tmpdir, "job1", {
+            "job_id": "job1", "at_id": 1228, "status": "running",
+            "pid": os.getpid(), "model": "claude/sonnet-4",
+            "repo_root": self._tmpdir, "worktree_path": self._tmpdir,
+            "branch_name": "at-1228-dispatch", "base_branch": "main",
+        })
+        result = local_mcp.promote_coding_task("job1")
+        self.assertTrue(result.startswith("ERROR:"))
+        self.assertIn("still running", result)
+        self.assertIn("job1", result)
+
+    def test_failed_job_rejected_with_clear_error(self):
+        local_mcp.dispatch_io.write_job_state(self._tmpdir, "job1", {
+            "job_id": "job1", "at_id": 1228, "status": "failed",
+            "model": "claude/sonnet-4", "repo_root": self._tmpdir,
+            "worktree_path": self._tmpdir, "branch_name": "at-1228-dispatch",
+        })
+        result = local_mcp.promote_coding_task("job1")
+        self.assertTrue(result.startswith("ERROR:"))
+        self.assertIn("failed", result)
+        self.assertIn("job1", result)
+
+    def test_already_promoted_job_rejected_with_clear_error(self):
+        import time as _time
+        local_mcp.dispatch_io.write_job_state(self._tmpdir, "job1", {
+            "job_id": "job1", "at_id": 1228, "status": "promoted",
+            "model": "claude/sonnet-4", "repo_root": self._tmpdir,
+            "worktree_path": self._tmpdir, "branch_name": "at-1228-dispatch",
+            "promoted_at": _time.time(), "merged_sha": "abc123",
+        })
+        result = local_mcp.promote_coding_task("job1")
+        self.assertTrue(result.startswith("ERROR:"))
+        self.assertIn("already promoted", result)
+        self.assertIn("job1", result)
+
+    # ------------------------------------------------------------------
+    # Happy-path: real merge exercised end-to-end
+    # ------------------------------------------------------------------
+
+    def test_promote_complete_job_merges_branch_removes_worktree_updates_state(self):
+        repo, base_branch, worktree_path, branch_name = (
+            self._make_repo_with_dispatch_branch()
+        )
+        local_mcp.dispatch_io.write_job_state(self._tmpdir, "job1", {
+            "job_id": "job1", "at_id": 1228, "status": "complete",
+            "model": "claude/sonnet-4",
+            "repo_root": repo,
+            "worktree_path": worktree_path,
+            "branch_name": branch_name,
+            "base_branch": base_branch,
+        })
+
+        result = local_mcp.promote_coding_task("job1")
+
+        self.assertFalse(result.startswith("ERROR:"), f"unexpected error: {result}")
+        self.assertIn("promoted", result)
+        self.assertIn(branch_name, result)
+        self.assertIn(base_branch, result)
+
+        # Worktree must be removed
+        self.assertFalse(os.path.isdir(worktree_path), f"worktree not removed: {worktree_path}")
+
+        # Default branch must now contain the dispatch commit
+        log_result = subprocess.run(
+            ["git", "log", "--oneline", "-1"],
+            cwd=repo, capture_output=True, text=True,
+        )
+        self.assertIn("implement the feature", log_result.stdout)
+
+        # Job state must reflect promotion
+        state = local_mcp.dispatch_io.read_job_state(self._tmpdir, "job1")
+        self.assertEqual(state["status"], "promoted")
+        self.assertIn("merged_sha", state)
+        self.assertEqual(state["merged_into"], base_branch)
+        self.assertTrue(state.get("worktree_removed"))
+
+    def test_promote_complete_job_no_base_branch_falls_back_to_repo_head(self):
+        """When base_branch is not recorded in job state (edge case from older
+        dispatches), promote_coding_task falls back to querying the repo's
+        current HEAD branch."""
+        repo, _base_branch, worktree_path, branch_name = (
+            self._make_repo_with_dispatch_branch()
+        )
+        # Write state WITHOUT base_branch
+        local_mcp.dispatch_io.write_job_state(self._tmpdir, "job1", {
+            "job_id": "job1", "at_id": 1228, "status": "complete",
+            "model": "claude/sonnet-4",
+            "repo_root": repo,
+            "worktree_path": worktree_path,
+            "branch_name": branch_name,
+            # base_branch intentionally omitted
+        })
+
+        result = local_mcp.promote_coding_task("job1")
+        self.assertFalse(result.startswith("ERROR:"), f"unexpected error: {result}")
+
+        state = local_mcp.dispatch_io.read_job_state(self._tmpdir, "job1")
+        self.assertEqual(state["status"], "promoted")
+
 
 if __name__ == "__main__":
     unittest.main()
