@@ -101,12 +101,41 @@ New MCP tool in `local-mcp.py` (Skein MCP -- see §9 for why there, not
 Odysseus-native, and why that's provisional):
 
 ```
-dispatch_coding_task(at_id: int, model: str = "cf/kimi-k2.6") -> str
+dispatch_coding_task(at_id: int, repo_root: str) -> str
 ```
+
+(No `model` parameter -- see the model-selection note below. Resolved
+internally from the AT row's own `Model:` annotation.)
 
 - Reads AT-`<at_id>`'s row from `ai-task-queue.md` (reuse the same row-lookup
   logic `ledger_io.py` already has for OQ blocks; AT rows don't yet have an
   equivalent `get_at_block`-style accessor -- needed as part of implementation).
+- **Model selection (resolved 2026-06-18, second planning pass):** does not
+  invent a new selection mechanism. Reads the target AT row's existing
+  `Model:` annotation -- already a required field per
+  `ai-model-selection-policy.md` §11 -- and resolves it through that policy's
+  §7 decision rules, with a toolchain-doctor-health-aware fallback layered on
+  top (this session found every tier flaky at a different point: Anthropic
+  credit exhaustion, CF Workers AI capacity 429s, a local model hallucinating
+  a tool call). **Naming caveat:** that policy names tiers Level-1/2/3; every
+  AT row written to date (including this spec's own) uses Tier-R/C/M from
+  `ai-task-queue.md`'s header instead -- a real drift, tracked as AT-1232,
+  this tool's model-resolution code should use whichever naming AT-1232
+  settles on, not invent a third mapping.
+- **Working-tree precondition (resolved 2026-06-18):** refuses to start if
+  the target repo has uncommitted changes (validator-at-the-boundary -- don't
+  start an automated job from an ambiguous base state). Reports via the
+  *existing* `create_open_question` escalation path, the same one every
+  other model-blocked-by-ambiguity case uses today -- **not** a new
+  "supervisor agent" triage layer. Whether such a layer should exist (and
+  resolve some blockers automatically before they reach a human) is OQ-289,
+  explicitly left open and explicitly not a blocker for this AT.
+- **Repo-busy check (resolved 2026-06-18):** PID-liveness first (store the
+  spawned process's PID in the job-state file; busy = PID still alive); a
+  CB-24-style timestamp-staleness check as the fallback for the case the PID
+  check can't resolve (e.g. PID reused after a restart). Mirrors, rather than
+  duplicates, the staleness pattern already proven in
+  `toolchain-doctor.ps1`'s `Test-OrchestratorRunActive`.
 - Resolves which repo the task targets. AT rows don't currently declare this
   explicitly (see AT-1216 item 7 -- multi-repo awareness) -- until that lands,
   require an explicit `repo_root` parameter (**OQ-288 resolved, Option A** --
@@ -159,6 +188,19 @@ The architect reviews via `get_coding_task_status`'s diff summary (or the
 richer Monaco diff view, §3.4/AT-1221) before calling this -- review is a
 chat action ("promote AT-1218's job"), not a separate UI flow, matching the
 spec's "chat is the primary interface" goal throughout. Tracked as AT-1229.
+
+### 3.2b Crash/hang detection (resolved 2026-06-18, second planning pass)
+
+Chosen: a watcher process, not status-tool polling -- but extend the
+*existing* `supervision-watcher.ps1` (AT-1168) rather than build a second
+one. That script already polls AT row status, orchestrator state files, and
+Cline process liveness on a fixed interval independent of any session, and
+already produces exactly the `stuckTaskCount`/`stuck`-per-item shape this
+need maps onto. It just doesn't know about `dispatch_coding_task`'s job-state
+directory yet, because that directory didn't exist before this spec. Tracked
+as AT-1231: add job entries to `supervision-status.json` alongside the
+existing `tasks[]`/`orchestratorStates[]` arrays, using the same
+PID-liveness-plus-staleness logic as §3.1's repo-busy check.
 
 ### 3.3 Why Cline CLI, not the VS Code extension
 
@@ -248,19 +290,36 @@ kept here for spec-local traceability:
    **(B)** block `dispatch_coding_task` entirely until multi-repo AT
    awareness exists. **Resolved: Option A.**
 
+### 7.1 Open question raised by the second planning pass (2026-06-18) -- not yet resolved
+
+5. **Supervisor-agent escalation (OQ-289, open).** Should blocking conditions
+   (e.g. §3.1's working-tree precondition) route through a new automated
+   "supervisor agent" triage layer instead of straight to a human-facing OQ?
+   Options: **(A)** no new layer -- use the existing `create_open_question`
+   path. **(B)** a standing supervisor process (extending
+   `supervision-watcher.ps1`, §3.2b) triages what it safely can and escalates
+   only what it can't -- not fully specified by naming it. **(C)** defer --
+   ship with Option A now, keep the question open for when job volume
+   justifies building a supervisor layer. **Preemptive answer: C** -- Option
+   B is the clear end state but isn't specified well enough to build yet.
+   AT-1228 does not block on this.
+
 ---
 
-## 8. AT tasks spawned by this spec -- live as AT-1219..1230
+## 8. AT tasks spawned by this spec -- live as AT-1219..1232
 
-All 11 tasks below are live Intake rows in `ai-task-queue.md` (AT-1219..1230;
-the dashboard-redesign-side tasks landed first as AT-1219..1228, AT-1229 was
-added when OQ-286 resolved to Option B).
+All 13 tasks below are live Intake rows in `ai-task-queue.md`. AT-1219..1228
+landed with the first planning pass; AT-1229 (promote tool) was spawned by
+OQ-286's resolution; AT-1231/1232 (watcher extension, tier-naming
+reconciliation) were spawned by the second planning pass on AT-1228 itself.
 
 | # | Task | AT ID | Effort | Depends on |
 |---|------|-------|--------|------------|
-| 1 | `dispatch_coding_task(at_id, repo_root, model)` MCP tool -- serializes per repo, commits to a dedicated branch (not main), own job-state directory, requires `repo_root` | AT-1228 | Medium | -- |
+| 1 | `dispatch_coding_task(at_id, repo_root)` MCP tool -- serializes per repo (PID-liveness + staleness fallback), commits to a dedicated branch (not main), own job-state directory, requires `repo_root`, resolves model from the AT row's existing `Model:` annotation | AT-1228 | Medium | AT-1232 (naming) |
 | 2 | `get_coding_task_status(job_id)` MCP tool | AT-1227 | Small | #1 |
 | 11 | `promote_coding_task(job_id)` MCP tool (spawned by OQ-286 Option B) | AT-1229 | Small-Medium | #1 |
+| 12 | Extend `supervision-watcher.ps1` to poll coding-task job state (S3.2b) | AT-1231 | Small | #1 |
+| 13 | Reconcile Tier-R/C/M vs. Level-1/2/3 naming between `ai-task-queue.md` and `ai-model-selection-policy.md` | AT-1232 | Tiny | -- |
 | 3 | Extend `dashboard_routes.py`/`dashboard.html` to list coding-task jobs | AT-1226 | Small-Medium | #1 |
 | 4 | Dedicated OQ UI with one-click resolve | AT-1225 | Medium | -- |
 | 5 | Cost chart + monthly spend projection | AT-1224 | Small-Medium | AT-1186 |
@@ -270,11 +329,13 @@ added when OQ-286 resolved to Option B).
 | 9 | xterm.js live-terminal-streaming spike | AT-1220 | Medium | #1 |
 | 10 | Resolve the SR-1.4 taxonomy mismatch (§9) | AT-1219 | Small | -- |
 
-**Final count: 4 OQs (all resolved same day) + 11 ATs** (one more than this
-spec's original estimate of 10 -- OQ-286's answer spawning AT-1229 is exactly
-the recursive-convergence pattern `task-and-oq-authoring-standard.md` Part 3
-describes: answering an OQ is itself a new high-level input that can spawn
-further ATs, not a sign the original plan was wrong).
+**Running count: 5 OQs total (4 resolved, OQ-289 open) + 13 ATs** -- up from
+the first pass's 4+11 estimate. This is the recursive-convergence pattern
+`task-and-oq-authoring-standard.md` Part 3 describes working as intended:
+each planning pass on the central tool (AT-1228) surfaced real prior art
+(the model-selection policy, the supervision watcher) and one genuinely new
+open question (OQ-289), not a sign the plan was wrong. Expect at least one
+more pass once AT-1228 is actually implemented and run against a real AT.
 
 ---
 
