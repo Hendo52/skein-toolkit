@@ -1051,6 +1051,31 @@ CF_GPT_OSS_MODEL_PREFIX = "@cf/openai/gpt-oss-"
 # repeats if CF_DEGENERATE_RETRY_LIMIT ever grows past this tuple's length.
 CF_DEGENERATE_RETRY_TEMPERATURES = (0.7, 1.0)
 
+# CB-23 (2026-06-18): CF Workers AI returns HTTP 429 with code 3040
+# ("AiError: Capacity temporarily exceeded, please try again") when a model is
+# momentarily overloaded -- confirmed transient empirically: a direct probe
+# against the same model succeeded between two failed Cline-dispatched
+# attempts on the same model, seconds apart. Before this fix, the streaming
+# path treated EVERY status_code >= 400 (429 alongside genuinely permanent
+# 401/403 auth failures) as non-transient and surfaced it to the client
+# immediately -- Cline's CLI then gives up on the whole task rather than
+# retrying the LLM call itself, even though CF's own error message says to
+# retry. 429 now reuses the existing attempt loop (see CF_CAPACITY_RETRY_LIMIT)
+# instead of returning immediately, with a short sleep first so the retry
+# doesn't immediately re-hit the same capacity wall.
+#
+# First version of this fix gave 429 only CF_DEGENERATE_RETRY_LIMIT's small
+# shared budget (2 retries) -- live-tested same day against a real degraded
+# kimi-k2.6 window: it turned an instant 100%-failure rate into multiple
+# successful tool calls per Cline run, but a long multi-call agentic session
+# could still exhaust 2 retries on one unlucky call and abort the whole task.
+# CF_CAPACITY_RETRY_LIMIT is deliberately larger and independent of the
+# degenerate-response budget -- the loop bound (see max_attempts below) covers
+# whichever of the two needs more attempts. Indexed by (attempt - 1); the last
+# value repeats if CF_CAPACITY_RETRY_LIMIT ever grows past this tuple's length.
+CF_CAPACITY_RETRY_LIMIT = 5
+CF_CAPACITY_RETRY_BACKOFF_SECONDS = (2.0, 4.0, 8.0, 15.0, 25.0)
+
 # Timeout for CF forward calls, both non-streaming and streaming. The previous
 # 60s value was tuned around gpt-oss's fast (often degenerate-empty, sub-10s)
 # responses and is far too short for kimi-k2.6's realistic completions: a
@@ -3248,51 +3273,72 @@ async def _cf_proxy(request: StarletteRequest):
     body = _scrub_secrets_from_body(body)
 
     if not is_stream:
-        try:
-            async with httpx.AsyncClient(timeout=CF_FORWARD_TIMEOUT_SECONDS) as client:
-                resp = await client.post(cf_url, json=body, headers=headers)
-        except httpx.TimeoutException:
-            print(
-                f"[cfproxy] CF request exceeded the proxy's "
-                f"{CF_FORWARD_TIMEOUT_SECONDS:.0f}s non-streaming timeout "
-                f"(model={body.get('model')!r}, max_tokens={body.get('max_tokens')!r}) "
-                f"-- the model is likely still generating a long completion",
-                file=sys.stderr,
-            )
-            return JSONResponse(
-                {"error": {
-                    "message": (
-                        f"CF did not respond within {CF_FORWARD_TIMEOUT_SECONDS:.0f}s. "
-                        f"This model may need stream=true or a smaller max_tokens for "
-                        f"non-streaming requests."
-                    ),
-                    "type": "cf_proxy_timeout",
-                }},
-                status_code=504,
-            )
-        try:
-            data = resp.json()
-        except Exception:
-            print(
-                f"[cfproxy] CF returned non-JSON (status {resp.status_code}): "
-                f"{resp.text[:300]!r}",
-                file=sys.stderr,
-            )
-            return JSONResponse(
-                {"error": {
-                    "message": await _diagnose_upstream_error(resp.status_code, resp.text, headers["Authorization"], account_id),
-                    "type": "upstream_error",
-                }},
-                status_code=resp.status_code if resp.status_code >= 400 else 502,
-            )
+        # CB-23: same 429-capacity retry as the streaming path below -- see
+        # CF_CAPACITY_RETRY_BACKOFF_SECONDS for why this is transient and
+        # worth retrying rather than surfacing immediately like a genuine
+        # (non-transient) auth/permission failure.
+        _non_stream_max_attempts = CF_CAPACITY_RETRY_LIMIT + 1
+        for _non_stream_attempt in range(1, _non_stream_max_attempts + 1):
+            try:
+                async with httpx.AsyncClient(timeout=CF_FORWARD_TIMEOUT_SECONDS) as client:
+                    resp = await client.post(cf_url, json=body, headers=headers)
+            except httpx.TimeoutException:
+                print(
+                    f"[cfproxy] CF request exceeded the proxy's "
+                    f"{CF_FORWARD_TIMEOUT_SECONDS:.0f}s non-streaming timeout "
+                    f"(model={body.get('model')!r}, max_tokens={body.get('max_tokens')!r}) "
+                    f"-- the model is likely still generating a long completion",
+                    file=sys.stderr,
+                )
+                return JSONResponse(
+                    {"error": {
+                        "message": (
+                            f"CF did not respond within {CF_FORWARD_TIMEOUT_SECONDS:.0f}s. "
+                            f"This model may need stream=true or a smaller max_tokens for "
+                            f"non-streaming requests."
+                        ),
+                        "type": "cf_proxy_timeout",
+                    }},
+                    status_code=504,
+                )
+            try:
+                data = resp.json()
+            except Exception:
+                print(
+                    f"[cfproxy] CF returned non-JSON (status {resp.status_code}): "
+                    f"{resp.text[:300]!r}",
+                    file=sys.stderr,
+                )
+                return JSONResponse(
+                    {"error": {
+                        "message": await _diagnose_upstream_error(resp.status_code, resp.text, headers["Authorization"], account_id),
+                        "type": "upstream_error",
+                    }},
+                    status_code=resp.status_code if resp.status_code >= 400 else 502,
+                )
 
-        if resp.status_code >= 400:
-            diagnosis = await _diagnose_upstream_error(resp.status_code, resp.text, headers["Authorization"], account_id)
-            print(diagnosis, file=sys.stderr)
-            return JSONResponse(
-                {"error": {"message": diagnosis, "type": "upstream_error"}},
-                status_code=resp.status_code,
-            )
+            if resp.status_code == 429 and _non_stream_attempt < _non_stream_max_attempts:
+                backoff = CF_CAPACITY_RETRY_BACKOFF_SECONDS[
+                    min(_non_stream_attempt - 1, len(CF_CAPACITY_RETRY_BACKOFF_SECONDS) - 1)
+                ]
+                print(
+                    f"[cfproxy] CF capacity error (429) from {body.get('model')!r} "
+                    f"(non-streaming attempt {_non_stream_attempt}/{_non_stream_max_attempts}) -- "
+                    f"retrying after {backoff}s: {resp.text[:200]!r}",
+                    file=sys.stderr,
+                )
+                await asyncio.sleep(backoff)
+                continue
+
+            if resp.status_code >= 400:
+                diagnosis = await _diagnose_upstream_error(resp.status_code, resp.text, headers["Authorization"], account_id)
+                print(diagnosis, file=sys.stderr)
+                return JSONResponse(
+                    {"error": {"message": diagnosis, "type": "upstream_error"}},
+                    status_code=resp.status_code,
+                )
+
+            break
 
         for choice in data.get("choices", []):
             msg = choice.get("message", {})
@@ -3361,7 +3407,14 @@ async def _cf_proxy(request: StarletteRequest):
         # and are never degenerate, so a retry never duplicates visible output.
         first_id = None
         first_model = body.get("model", "")
-        max_attempts = CF_DEGENERATE_RETRY_LIMIT + 1
+        # CB-23: the loop bound covers whichever retry reason needs more
+        # attempts -- degenerate-response retries (temperature perturbation,
+        # CF_DEGENERATE_RETRY_TEMPERATURES) or 429 capacity retries (backoff
+        # sleep, CF_CAPACITY_RETRY_BACKOFF_SECONDS). Both share this same
+        # attempt counter and loop; a request only ever needs one budget or
+        # the other in practice, so sharing the larger of the two ceilings
+        # costs nothing extra in the common case.
+        max_attempts = max(CF_DEGENERATE_RETRY_LIMIT, CF_CAPACITY_RETRY_LIMIT) + 1
 
         for attempt in range(1, max_attempts + 1):
             buffered = ""
@@ -3411,6 +3464,25 @@ async def _cf_proxy(request: StarletteRequest):
                         # Continue.dev like a broken connection rather than a
                         # readable error. Surface the real upstream error instead.
                         error_body = (await resp.aread()).decode("utf-8", "replace")
+
+                        # CB-23: 429 capacity errors are transient (CF's own
+                        # message says "please try again") -- retry within the
+                        # existing attempt budget instead of giving up. Checked
+                        # before _diagnose_upstream_error/auth handling below,
+                        # which is only correct for genuinely permanent failures.
+                        if resp.status_code == 429 and attempt < max_attempts:
+                            backoff = CF_CAPACITY_RETRY_BACKOFF_SECONDS[
+                                min(attempt - 1, len(CF_CAPACITY_RETRY_BACKOFF_SECONDS) - 1)
+                            ]
+                            print(
+                                f"[cfproxy] CF capacity error (429) from {first_model} "
+                                f"(attempt {attempt}/{max_attempts}) -- retrying after {backoff}s: "
+                                f"{error_body[:200]!r}",
+                                file=sys.stderr,
+                            )
+                            await asyncio.sleep(backoff)
+                            continue
+
                         err_text = await _diagnose_upstream_error(resp.status_code, error_body, headers["Authorization"], account_id)
                         print(err_text, file=sys.stderr)
                         base = {
@@ -3423,6 +3495,9 @@ async def _cf_proxy(request: StarletteRequest):
                         # and CF_DEGENERATE_RETRY_LIMIT attempts on a problem that
                         # can only be fixed by editing the CF token's permissions
                         # (see _diagnose_upstream_error). Surface immediately.
+                        # (429 is handled above and never reaches here unless the
+                        # retry budget is also exhausted, in which case it falls
+                        # through to this same honest-error path.)
                         yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': err_text}, 'finish_reason': None}]})}\n\n"
                         yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
                         yield "data: [DONE]\n\n"
