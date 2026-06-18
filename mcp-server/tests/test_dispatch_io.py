@@ -289,7 +289,10 @@ class TestSpawnClineProcess(unittest.TestCase):
             )
         args, kwargs = mock_popen.call_args
         argv = args[0]
-        self.assertEqual(argv[:4], ["powershell", "-NoProfile", "-File", "C:/run-cline.ps1"])
+        self.assertEqual(
+            argv[:6],
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:/run-cline.ps1"],
+        )
         self.assertIn("-RepoRoot", argv)
         self.assertIn("C:/repo-wt", argv)
         self.assertIn("-Model", argv)
