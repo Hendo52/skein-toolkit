@@ -314,15 +314,17 @@ def spawn_cline_process(
     spawned process, not here)."""
     return subprocess.Popen(
         [
-            # -ExecutionPolicy Bypass: found 2026-06-18 during this AT's own
-            # smoke test -- a bare `powershell -File run-cline.ps1` spawned
-            # via subprocess.Popen fails immediately with "running scripts is
+            # pwsh (PowerShell 7+), not the legacy `powershell` (5.1): found
+            # 2026-06-18 during this AT's own smoke test -- toolchain-
+            # doctor.ps1 (run-cline.ps1's own preflight) uses PowerShell-7-
+            # only syntax (the `?.` null-conditional operator), so invoking
+            # it via 5.1 fails with a parser error before anything real
+            # runs. -ExecutionPolicy Bypass: a bare invocation spawned via
+            # subprocess.Popen otherwise fails with "running scripts is
             # disabled on this system" (UnauthorizedAccess), even though the
-            # same script runs fine through an interactive PowerShell
-            # session. The machine's default execution policy only allows
-            # unsigned local scripts in an interactive/profile-loaded
-            # context; a plain child-process invocation doesn't get that.
-            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", run_cline_script,
+            # same script runs fine through an interactive session -- a
+            # per-process flag, not a persistent system-wide change.
+            "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", run_cline_script,
             "-RepoRoot", repo_root,
             "-Model", model,
             "-Task", task_prompt,

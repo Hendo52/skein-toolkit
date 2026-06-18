@@ -291,7 +291,7 @@ class TestSpawnClineProcess(unittest.TestCase):
         argv = args[0]
         self.assertEqual(
             argv[:6],
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:/run-cline.ps1"],
+            ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:/run-cline.ps1"],
         )
         self.assertIn("-RepoRoot", argv)
         self.assertIn("C:/repo-wt", argv)
