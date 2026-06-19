@@ -355,6 +355,65 @@ model for judgment calls" vs. "cannot afford to waste tokens" -- resolves to:
   wake mechanism and document the triage logic for choosing between these
   four, not just the mechanism itself.
 
+### 3.6 The wake-loop mechanism and decision menu, implemented (AT-1233)
+
+**Wake mechanism.** Two documented patterns, not yet a standing live
+schedule (activating a persistent `CronCreate` routine is a separate,
+deliberate decision -- see below):
+- **Live session:** `ScheduleWakeup` with a reason and a prompt that
+  re-invokes the supervision check, exactly as used manually throughout
+  this session's own real dispatch/aider-evaluation supervision.
+- **Fully unattended:** a standing `CronCreate` routine on the same
+  interval, reading the same log. Designed but **not activated** as of
+  this AT -- a recurring cloud routine has ongoing resource/cost
+  implications distinct from a one-off live-session wake, and activating
+  one is a separate decision from designing the mechanism.
+
+**Decision menu, implemented as real code, not prose alone
+(`mcp-server/supervisor_triage.py`):** `recommend_action(log_tail)` pattern-
+matches a stuck job's log tail against signatures of failure modes already
+seen for real this session, returning one of:
+- **retry** -- Anthropic credit exhaustion, CF 429/capacity/rate-limit,
+  the project's own known degenerate-empty-response chronic problem,
+  generic connection/timeout errors. All transient in the sense that
+  retrying (possibly via the next candidate in the model-tier's fallback
+  list, per `dispatch_io.resolve_model_for_tier`) can succeed without
+  any other intervention.
+- **restart_dependency** -- LiteLLM/local-mcp.py not responding (CB-15/
+  CB-24's signature), the machine's execution-policy block, or
+  `toolchain-doctor.ps1`'s own PowerShell-7-only syntax invoked via the
+  wrong interpreter. All three found for real this session during
+  AT-1228's own smoke tests -- the fixes are already in
+  `dispatch_io.spawn_cline_process`/`toolchain-doctor.ps1`, but a future
+  *regression* of any of them (or a new toolchain-down failure mode with
+  a similar shape) should route here, not to a bare retry that would
+  just fail again for the same reason.
+- **raise_oq** -- anything not matching a known retryable/fixable
+  signature, **including every revert candidate**. `recommend_action`
+  deliberately never returns `revert`: recognizing "this job's output is
+  a mess, discard it" requires judging actual diff/commit content, which
+  a log-tail pattern match cannot do safely. A revert recommendation
+  needs a richer check (e.g. diffing the worktree branch) layered on top
+  by whatever calls this function -- not invented here as a guess.
+
+**Verified via a real dry run, not a synthetic one (per this AT's exit
+evidence):** ran `recommend_action` against the actual captured log of a
+real failed job from earlier today (`at1230-184de386`, AT-1228's own first
+smoke-test failure). This dry run itself found a real bug in the triage
+logic -- the captured log had the failure phrase split across a line wrap
+("running scripts is \ndisabled on this system"), which a naive substring
+match missed, falling through to a confidently-wrong `raise_oq` instead of
+the correct `restart_dependency`. Fixed by collapsing whitespace before
+matching; regression test added using the exact real wrapped text. After
+the fix, the dry run correctly recommends `restart_dependency` -- matching
+exactly what was actually done to resolve that failure for real.
+
+**Degraded-supervision mode (when Claude itself is unavailable): open,
+tracked as OQ-294, not yet implemented.** See S3.5 and OQ-294 for the
+options under consideration (a narrowed action set for a cheaper fallback
+model vs. the full menu vs. no degraded mode at all) -- this AT's primary
+mechanism above is independent of that decision and was not blocked by it.
+
 ---
 
 ## 8. AT tasks spawned by this spec -- live as AT-1219..1233
