@@ -36,6 +36,7 @@ The wizard will:
 - Generate an SSH key pair (or let you point to an existing one)
 - Upload the public key to your Vast.ai account
 - Ask for your git repo URL (used to clone your code onto each fresh instance)
+- Ask for your tik/tok batch file path (used by the AI task queue; leave blank to skip)
 - Write your personal settings to `~/.devserver-config.ps1` (not tracked in git)
 
 ### 3. Connect

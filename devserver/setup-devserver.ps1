@@ -122,6 +122,7 @@ $existingRepo         = '/workspace/Electron-Splines'
 $existingRepoUrl      = ''
 $existingVastAiKey    = ''
 $existingGitHubToken  = ''
+$existingBatchPath    = ''
 $DevServerKey         = ''
 $DevServerRepo        = ''
 $DevServerRepoUrl     = ''
@@ -136,6 +137,7 @@ if (Test-Path $userConfigPath) {
     if ($DevServerRepo)         { $existingRepo         = $DevServerRepo }
     if ($DevServerRepoUrl)      { $existingRepoUrl      = $DevServerRepoUrl }
     if ($DevServerGitHubToken)  { $existingGitHubToken  = $DevServerGitHubToken }
+    if ($BatchFilePath)         { $existingBatchPath    = $BatchFilePath }
 }
 if (-not $existingKey) { $existingKey = "$env:USERPROFILE\.ssh\vast_key" }
 if (($existingRepo -eq '/root/repo' -or [string]::IsNullOrWhiteSpace($existingRepo)) -and -not [string]::IsNullOrWhiteSpace($existingRepoUrl)) {
@@ -153,7 +155,7 @@ if ($storedGitHubToken) { $existingGitHubToken = $storedGitHubToken }
 # ===========================================================================
 # STEP 1: vastai CLI
 # ===========================================================================
-Write-Step "Step 1/5: vastai CLI"
+Write-Step "Step 1/6: vastai CLI"
 $vastaiExe = (Get-Command vastai -ErrorAction SilentlyContinue)?.Source
 if (-not $vastaiExe) {
     $fallback = "$env:LOCALAPPDATA\Programs\Python\Python312\Scripts\vastai.exe"
@@ -185,7 +187,7 @@ if ($vastaiExe) {
 # ===========================================================================
 # STEP 2: Vast.ai API key
 # ===========================================================================
-Write-Step "Step 2/5: Vast.ai API key"
+Write-Step "Step 2/6: Vast.ai API key"
 Write-Host "  Get your API key from: https://cloud.vast.ai/account/" -ForegroundColor DarkGray
 if ($existingVastAiKey) {
     $testOut = & $vastaiExe show user --api-key $existingVastAiKey --raw 2>&1 | Out-String
@@ -218,7 +220,7 @@ if (-not $existingVastAiKey) {
 # ===========================================================================
 # STEP 3: SSH key
 # ===========================================================================
-Write-Step "Step 3/5: SSH key"
+Write-Step "Step 3/6: SSH key"
 # If a previous bad config stored the key content instead of the file path, reset to default.
 if ($existingKey -match '^(ssh-|ecdsa-|sk-|-----BEGIN)' -or -not (Is-LikelyFilePath $existingKey)) {
     Write-Host "  WARNING: \$DevServerKey in your config looks like a key content string, not a file path." -ForegroundColor Yellow
@@ -248,7 +250,7 @@ if (-not (Test-Path $sshKeyPath)) {
 # ===========================================================================
 # STEP 4: Upload public key to Vast.ai
 # ===========================================================================
-Write-Step "Step 4/5: Upload SSH public key to Vast.ai"
+Write-Step "Step 4/6: Upload SSH public key to Vast.ai"
 if (Test-Path $sshPubPath) {
     $pubKeyContent = (Get-Content $sshPubPath -Raw).Trim()
     # Check if this key is already registered
@@ -269,7 +271,7 @@ if (Test-Path $sshPubPath) {
 # ===========================================================================
 # STEP 5: Repo settings
 # ===========================================================================
-Write-Step "Step 5/5: Repository settings"
+Write-Step "Step 5/6: Repository settings"
 Write-Host "  These are used to clone your repo onto the rented GPU instance." -ForegroundColor DarkGray
 $repoUrl  = Prompt-User "Git repo URL (e.g. https://github.com/you/your-repo.git or leave blank to skip)" $existingRepoUrl
 while (-not (Is-GitRepoUrl $repoUrl)) {
@@ -329,6 +331,19 @@ if (-not [string]::IsNullOrWhiteSpace($repoUrl) -and $repoUrl -match '^https://g
 }
 
 # ===========================================================================
+# STEP 6: Tik/tok batch file
+# ===========================================================================
+Write-Step "Step 6/6: Tik/tok batch file"
+Write-Host "  If you use the tik/tok dual-queue system, point to your batch file." -ForegroundColor DarkGray
+Write-Host "  Leave blank to disable batch-aware mode." -ForegroundColor DarkGray
+$batchPath = Prompt-User "Path to your project's tik/tok batch file" $existingBatchPath
+while ($batchPath -and -not (Is-LikelyFilePath $batchPath)) {
+    Write-Host "  That does not look like a file path. Enter an absolute Windows path (e.g. C:\Users\you\project\ai-task-tik.md) or leave blank." -ForegroundColor Red
+    $batchPath = Prompt-User "Path to your project's tik/tok batch file" ""
+}
+if (-not $batchPath) { $batchPath = '' }
+
+# ===========================================================================
 # Write user config
 # ===========================================================================
 $configLines = @(
@@ -347,6 +362,9 @@ $configLines = @(
     "# GitHub personal access token is stored securely under LOCALAPPDATA."
     "# KEEP THIS FILE OUT OF VERSION CONTROL."
     "`$DevServerGitHubToken = ''"
+    ""
+    "# Path to your project's tik/tok batch file (leave blank to disable)"
+    "`$BatchFilePath = `"$batchPath`""
 )
 try {
     [System.IO.File]::WriteAllLines($userConfigPath, $configLines)
