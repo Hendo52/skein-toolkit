@@ -7,6 +7,24 @@ one-page impressions note. All runs below are real: real LiteLLM calls, real fil
 real test suites, real failures. Nothing in this document is extrapolated from aider's
 own marketing or general reputation.
 
+## Important caveat found after the fact (2026-06-19, post-evaluation)
+
+A real, separate bug was discovered while reviewing the OQ ledger after this evaluation:
+`local-mcp.py`'s Cline-specific multi-step interceptor (`_detect_multi_step_ask`) cannot
+distinguish Cline traffic from any other OpenAI-compatible client hitting the same `cf/*`
+models. Several of this evaluation's `cf/kimi-k2.6` task messages (350+ chars, 3+ distinct
+action verbs -- exactly its documented trigger shape) were silently intercepted and
+decomposed into autonomous orchestrator runs invisible to both aider and the operator,
+discovered only afterward via 3 unexpected OQ rows (now closed; root cause queued as
+AT-1245). No real file changes resulted, but **this means some of the empty-response and
+hallucinated-conversation failures attributed to `cf/kimi-k2.6` below may actually be
+artifacts of the interceptor silently rerouting the request, not failures of the model
+or aider itself.** The go/no-go conclusion is unaffected (the `dispatch_coding_task`
+comparison and the local-model context-window failures are unrelated to this bug, and
+those alone are sufficient grounds for "no-go on this evidence") -- but the specific
+`cf/kimi-k2.6` failure attributions below should be read with this in mind, not taken as
+clean evidence against that model specifically.
+
 ## Setup
 
 `pip install aider-chat` (skein-toolkit's `.venv`) -- clean install, version 0.86.2.
