@@ -30,6 +30,15 @@ param(
     [int]$StuckThresholdSeconds = 1800,
     [string]$RepoRoot = (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)),
     [string]$OutFile = (Join-Path $env:USERPROFILE ".cf_proxy_orchestrator\supervision-status.json"),
+    # AT-1232: dispatch_coding_task's job-state directory (CODING_TASK_STATE_DIR's
+    # default in local-mcp.py/dispatch_io.py -- kept in sync manually since this
+    # script has no Python dependency to import the constant from).
+    [string]$CodingTaskStateDir = (Join-Path $env:USERPROFILE ".coding_task_dispatch"),
+    # dispatch_coding_task's own DEFAULT_DISPATCH_TIMEOUT_SECONDS is 1200 (20 min);
+    # run-cline.ps1 should self-terminate at that point. A job still reporting
+    # status:running well past timeout+buffer, even with a live PID, means the
+    # timeout enforcement itself failed -- worth flagging, not just PID death.
+    [int]$CodingTaskTimeoutBufferSeconds = 1800,
     [switch]$RunOnce
 )
 
@@ -102,6 +111,56 @@ function Test-ClineAlive {
     return [bool]$proc
 }
 
+function Get-CodingTaskJobs {
+    # AT-1232: mirrors dispatch_io.find_busy_job_for_repo's logic (PID-liveness
+    # primary; a confirmed-dead PID means crashed, not busy) so this watcher and
+    # dispatch_coding_task agree on what "stuck" means, rather than maintaining
+    # two independent definitions that could silently drift apart.
+    $jobs = @()
+    if (-not (Test-Path $CodingTaskStateDir)) { return $jobs }
+    $nowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $files = Get-ChildItem $CodingTaskStateDir -Filter "*.json" -ErrorAction SilentlyContinue
+    foreach ($f in $files) {
+        try {
+            $state = Get-Content $f.FullName -Raw | ConvertFrom-Json
+        } catch {
+            $jobs += [PSCustomObject]@{
+                jobId = $f.BaseName; atId = $null; status = "UNREADABLE"; model = $null
+                pid = $null; pidAlive = $false; secondsSinceStarted = $null; stuck = $true
+            }
+            continue
+        }
+        $pidAlive = $false
+        if ($state.pid) {
+            $proc = Get-Process -Id $state.pid -ErrorAction SilentlyContinue
+            $pidAlive = [bool]$proc
+        }
+        $secondsSinceStarted = $null
+        if ($state.started_at) { $secondsSinceStarted = $nowEpoch - [int64]$state.started_at }
+
+        $stuck = $false
+        if ($state.status -eq "running") {
+            if (-not $pidAlive) {
+                $stuck = $true  # PID confirmed dead while status still says running -- crashed
+            } elseif ($null -ne $secondsSinceStarted -and $secondsSinceStarted -gt $CodingTaskTimeoutBufferSeconds) {
+                $stuck = $true  # alive but past dispatch_coding_task's own timeout+buffer -- timeout enforcement failed
+            }
+        }
+
+        $jobs += [PSCustomObject]@{
+            jobId               = $f.BaseName
+            atId                = $state.at_id
+            status              = $state.status
+            model               = $state.model
+            pid                 = $state.pid
+            pidAlive            = $pidAlive
+            secondsSinceStarted = $secondsSinceStarted
+            stuck               = $stuck
+        }
+    }
+    return $jobs
+}
+
 function Invoke-SupervisionPoll {
     # Canonical "now" is a Unix epoch second count (a plain number) -- never an
     # ISO date STRING. PowerShell's ConvertFrom-Json auto-detects and silently
@@ -155,14 +214,23 @@ function Invoke-SupervisionPoll {
         }
     }
 
+    $codingTaskJobs = Get-CodingTaskJobs
+    $stuckCodingTaskJobCount = @($codingTaskJobs | Where-Object { $_.stuck }).Count
+
     $result = [PSCustomObject]@{
         pollTimestampEpoch = $nowEpoch
         pollTimestampIso   = $nowIso
         watchedTaskIds     = $WatchedTaskIds
         tasks              = $tasks
         orchestratorStates = Get-OrchestratorStates
+        codingTaskJobs     = $codingTaskJobs
         clineAlive         = Test-ClineAlive
-        stuckTaskCount     = @($tasks | Where-Object { $_.stuck }).Count
+        # AT-1232: the total across both AT-row staleness AND coding-task-job
+        # staleness -- AT-1233's wake-loop checks this single field to decide
+        # whether anything needs attention at all, so it must cover both
+        # detection mechanisms, not just the original AT-row one.
+        stuckTaskCount           = @($tasks | Where-Object { $_.stuck }).Count + $stuckCodingTaskJobCount
+        stuckCodingTaskJobCount  = $stuckCodingTaskJobCount
     }
 
     $outDir = Split-Path -Parent $OutFile
@@ -178,13 +246,13 @@ Write-Host "[supervision-watcher] output: $OutFile" -ForegroundColor Cyan
 
 if ($RunOnce) {
     $r = Invoke-SupervisionPoll
-    Write-Host "[supervision-watcher] single poll complete -- $($r.stuckTaskCount) stuck task(s), cline alive: $($r.clineAlive)" -ForegroundColor $(if ($r.stuckTaskCount -gt 0) { 'Yellow' } else { 'Green' })
+    Write-Host "[supervision-watcher] single poll complete -- $($r.stuckTaskCount) stuck task(s) [$($r.stuckCodingTaskJobCount) coding-task job(s)], cline alive: $($r.clineAlive)" -ForegroundColor $(if ($r.stuckTaskCount -gt 0) { 'Yellow' } else { 'Green' })
     exit 0
 }
 
 while ($true) {
     $r = Invoke-SupervisionPoll
     $color = if ($r.stuckTaskCount -gt 0) { 'Yellow' } else { 'Green' }
-    Write-Host "[supervision-watcher] $($r.pollTimestampIso) -- $($r.stuckTaskCount) stuck task(s), cline alive: $($r.clineAlive)" -ForegroundColor $color
+    Write-Host "[supervision-watcher] $($r.pollTimestampIso) -- $($r.stuckTaskCount) stuck task(s) [$($r.stuckCodingTaskJobCount) coding-task job(s)], cline alive: $($r.clineAlive)" -ForegroundColor $color
     Start-Sleep -Seconds $PollIntervalSeconds
 }

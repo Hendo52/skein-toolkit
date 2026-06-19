@@ -23,6 +23,9 @@ mcp-server\supervision-watcher.ps1 -WatchedTaskIds 1162,1163,1164,1166,1167
 
 # Tune the poll interval and stuck threshold
 mcp-server\supervision-watcher.ps1 -PollIntervalSeconds 30 -StuckThresholdSeconds 900
+
+# Tune the coding-task-job timeout buffer (AT-1232) -- default 1800s
+mcp-server\supervision-watcher.ps1 -CodingTaskTimeoutBufferSeconds 2400
 ```
 
 It does not require Cline, Claude, or any MCP server to be running -- it only
@@ -55,7 +58,11 @@ Then look at, in order:
    updating its own state file (the orchestrator only writes on each step
    transition, so a long gap usually means the dispatching process -- Cline,
    `run-cline.ps1` -- is no longer advancing it).
-4. **`clineAlive`** -- `false` while AT rows show `Ready` (not yet dispatched)
+4. **`codingTaskJobs[].stuck`** (AT-1232) -- a `dispatch_coding_task` job whose
+   process died without ever reaching a terminal status, or whose PID is alive
+   well past the dispatch timeout (the `run-cline.ps1` timeout itself failed).
+   Check `atId` to see which AT it was, `model` for which model was running.
+5. **`clineAlive`** -- `false` while AT rows show `Ready` (not yet dispatched)
    is expected and fine; `false` while an orchestrator state shows `running`
    is the strongest "something died" signal in the whole log.
 
@@ -69,8 +76,35 @@ Then look at, in order:
 | `watchedTaskIds` | The AT numbers this poll was configured to watch. |
 | `tasks[]` | One entry per watched AT: `id`, `status` (the raw text inside the queue row's leading `**...**`, or `"DONE (was: <original status>)"` if the row's status was struck through -- see below), `lastChangeEpoch`/`lastChangeIso` (when `status` last differed from the previous poll), `secondsSinceChange`, `stuck` (`secondsSinceChange > StuckThresholdSeconds`). |
 | `orchestratorStates[]` | One entry per `~/.cf_proxy_orchestrator/*.json` file: `key` (filename without extension -- the orchestrator run key), `status`, `current`/`total` step, `model`, `lastLogTimestamp` (from the state file's own log, not this script's clock). |
+| `codingTaskJobs[]` | (AT-1232) One entry per `~/.coding_task_dispatch/*.json` file (`dispatch_coding_task`'s job-state directory): `jobId`, `atId`, `status`, `model`, `pid`, `pidAlive` (live `Get-Process -Id` check), `secondsSinceStarted`, `stuck`. |
 | `clineAlive` | Whether a `cline.exe` process is currently running. |
-| `stuckTaskCount` | Count of `tasks[]` with `stuck: true` -- the single field worth checking first. |
+| `stuckTaskCount` | Total stuck count across **both** `tasks[]` (AT-row staleness) and `codingTaskJobs[]` (coding-task-job staleness) -- the single field worth checking first. AT-1233's wake-loop gates on this combined total, not just the original AT-row count. |
+| `stuckCodingTaskJobCount` | The `codingTaskJobs[]`-only portion of `stuckTaskCount`, for when you need to know which detection mechanism actually fired. |
+
+### `codingTaskJobs[].stuck` -- how it's determined (AT-1232)
+
+Mirrors `dispatch_io.find_busy_job_for_repo`'s own logic (PID-liveness primary)
+so this watcher and `dispatch_coding_task` never disagree about what "stuck"
+means:
+
+- `status != "running"` (i.e. `complete`/`failed`/`promoted`) -- never stuck,
+  regardless of PID or age. The job already reached a terminal state.
+- `status == "running"` and the recorded PID is **not** alive -- stuck. The
+  process died without the job ever transitioning out of `running`
+  (`get_coding_task_status` only flips the status on its *next* poll; this
+  watcher catches it independently of whether anyone polls).
+- `status == "running"`, PID **is** alive, but `secondsSinceStarted` exceeds
+  `-CodingTaskTimeoutBufferSeconds` (default 1800s = `dispatch_coding_task`'s
+  own 1200s dispatch timeout plus a 600s buffer) -- stuck. A live PID this far
+  past the dispatch timeout means `run-cline.ps1`'s own `-TimeoutSec`
+  enforcement failed to kill it, not that the job is legitimately still
+  working.
+- `status == "running"`, PID alive, within the timeout window -- **not**
+  stuck, even if `secondsSinceStarted` is large in absolute terms. Job state
+  files are only rewritten at dispatch and at terminal-status transition, not
+  on a heartbeat, so "time since last write" is not a useful staleness signal
+  while a job is legitimately still running -- only PID-liveness and the
+  timeout ceiling are.
 
 ### The strikethrough convention
 
