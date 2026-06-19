@@ -946,3 +946,46 @@ This is the same "retry -> growing-context -> repeat" shape as CB-16 (which was 
 **AT-1171 (model-attribution commit trailer) -- already implemented, documenting here per its exit evidence requirement.** `_build_step_dispatch_body` (local-mcp.py:2552) accepts a `model` parameter; when present, it appends an instruction to the step's system prompt telling the executor to include `Co-Authored-By: {model} <noreply@cf-proxy.local>` in any commit made during that step, alongside the existing Cline/Claude trailer. `_dispatch_step` (local-mcp.py:2830) passes `state.get("model")` through on every call, so every orchestrated step dispatch carries this instruction automatically -- no per-task opt-in needed. Implemented in skein-toolkit commit `f5f0108` ("feat: add model attribution trailer to orchestrator step commits (AT-1171)"), 2026-06-16. Addresses vibe-coding anti-patterns #6 ("model drift") and #9 ("missing AI-attribution") -- a diff's authoring model is now recoverable from `git log` directly rather than requiring a cross-reference against `~/.cf_proxy_orchestrator/*.json` timestamps.
 
 **CB-22 (ID-collision flag, not a new bug):** while documenting AT-1171, found that **section 10's "CB-20"** (2026-06-14, multi-step detector misfiring on tool-result feedback) is a *different* bug from a second "**CB-20**" used in `skein-toolkit/mcp-server/run-cline.ps1`'s comments (2026-06-17, Cline v3.x Bun binary `stdio: "inherit"` not reading a `Start-Process -RedirectStandardInput` file-handle -- fixed via cmd.exe's pipe operator). Both were assigned independently without checking this doc, the same class of problem as CB-18 (`_next_oq_id` ID-reuse-after-retirement) but for hand-assigned CB numbers rather than orchestrator-assigned OQ numbers -- there is no `_next_cb_id` helper enforcing uniqueness. No functional impact (both bugs are independently real and independently fixed), but the duplicate ID makes this doc's CB-20 ambiguous out of context. **Recommendation:** treat `run-cline.ps1`'s CB-20 entry as **CB-22** going forward (this doc's CB-20 keeps its original number since it was assigned first chronologically, 2026-06-14 vs 2026-06-17); update the comment in `run-cline.ps1` in a follow-on pass. No `_next_cb_id` mechanism exists to prevent recurrence -- flagged for awareness, not scoped as its own fix here.
+
+---
+
+## 13. 2026-06-18/19 -- CB-23 through CB-26, reconciled into this doc late (CB-22's predicted recurrence, confirmed)
+
+CB-22 (above) predicted exactly this would happen again with no enforced
+uniqueness mechanism -- it did. CB-23 through CB-26 were assigned and used
+in real commit messages across 2026-06-18/19 without ever being logged in
+this canonical doc. Reconciled here now, in chronological order, plus a
+high-water-mark marker (below) to actually close the loop CB-22 left open.
+
+- **CB-23 (2026-06-18):** CF Workers AI `429` capacity errors not retried
+  by the proxy itself (`_diagnose_upstream_error` had no 429/3040 case,
+  same gap CB-21 named but didn't fix). Fixed: `CF_CAPACITY_RETRY_LIMIT`/
+  `CF_CAPACITY_RETRY_BACKOFF_SECONDS` added to `_cf_proxy`'s retry logic
+  (both streaming and non-streaming paths). skein-toolkit, `local-mcp.py`.
+- **CB-24 (2026-06-18):** `toolchain-doctor.ps1`'s orchestrator-active
+  check used a fixed staleness window that didn't account for a
+  multi-day-stale run blocking auto-restart. Fixed: `Test-
+  OrchestratorRunActive` rewritten with a `$StalenessThresholdMinutes`
+  parameter (default 60), checking `updated`/`created` timestamps.
+- **CB-25 (2026-06-18):** `run-cline.ps1`'s timeout-kill used
+  `$proc.Kill()` on the wrapping `cmd.exe`, which doesn't reach the actual
+  `cline.exe` running downstream in a `type file | npx cline` pipeline --
+  confirmed live (an orphaned `cline.exe` kept running unsupervised for
+  the rest of that session, editing files no one reviewed, caught by
+  accident via a stray `git status`). Fixed: `taskkill /F /T /PID`
+  (kills the whole process tree). Same pattern reused in `dispatch_io.
+  kill_job_process_tree` (AT-1228) and `supervisor_triage.py`'s
+  `restart_dependency` recommendations (AT-1233).
+- **CB-26 (2026-06-19):** Electron-Splines' `ai-task-queue.md` grew to
+  ~232K tokens (47.3% struck-through/Done rows), large enough to exceed
+  a real model's context window and break a real in-progress Cline task
+  ("estimated number of input and maximum output tokens (262359)
+  exceeded this model context window limit (262144)" -- reported live by
+  the architect). Fixed: Done rows archived to a separate file (mirrors
+  the OQ ledger's resolved-row policy), plus an AT-id high-water-mark
+  marker (`ledger_io.next_at_id`/`bump_at_high_water_mark`) so archiving
+  a row never risks re-minting its id -- the same class of fix as CB-18,
+  for AT ids instead of OQ ids.
+
+**Highest CB number used (do not reuse below this number -- the fix CB-22
+asked for and this doc never actually added until now):** 26
