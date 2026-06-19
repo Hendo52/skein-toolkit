@@ -2594,7 +2594,12 @@ def _append_at_row(row: str) -> bool:
     function is just the file I/O + path resolution around it.
 
     AT-1162: the read-modify-write is wrapped in _ledger_lock so a second
-    concurrent writer blocks and retries rather than racing."""
+    concurrent writer blocks and retries rather than racing.
+
+    CB-26: also bumps the doc's high-water-mark marker to this row's id,
+    mirroring _append_oq_row's existing CB-18 fix, so a future next_at_id()
+    call still skips this id even after the row is later archived out of
+    the live file (see ledger_io.next_at_id)."""
     path = _resolve(AT_QUEUE_PATH)
     try:
         with _ledger_lock(path):
@@ -2604,6 +2609,11 @@ def _append_at_row(row: str) -> bool:
             except Exception as e:
                 print(f"[cfproxy][taskqueue] failed to read AT queue to append a row: {e}", file=sys.stderr)
                 return False
+            row_id_match = re.match(r"^\|\s*AT-(\d+)\s*\|", row)
+            if row_id_match:
+                queue_text, bumped = ledger_io.bump_at_high_water_mark(queue_text, int(row_id_match.group(1)))
+                if not bumped:
+                    print(f"[cfproxy][taskqueue] AT high-water-mark marker not found or not raised for {row_id_match.group(0)} -- next_at_id() will rely on row-scan only", file=sys.stderr)
             new_text, inserted = ledger_io.insert_at_row(queue_text, row)
             if not inserted:
                 print(f"[cfproxy][taskqueue] AT queue has no '{_AT_INTAKE_HEADING}' subsection with a table separator and no '{_AT_READY_POOL_HEADING_PREFIX}' heading -- refusing to guess where to insert", file=sys.stderr)
