@@ -202,6 +202,16 @@ model_list:
   # Self-hosted DeepSeek via Ollama (local/deepseek-r1:*) is the safe alternative.
   # Entry retained for non-sensitive tasks only -- set DEEPSEEK_API_KEY to enable.
 
+  - model_name: deepseek/v3.1
+    litellm_params:
+      model: "deepseek/deepseek-v3.1"
+      api_key: "os.environ/DEEPSEEK_API_KEY"
+      max_tokens: 16384
+      input_cost_per_token: 0.00000060   # $0.60/M input, cache-miss; $0.20/M cache-hit (2026-06)
+      output_cost_per_token: 0.00000170  # $1.70/M output
+    model_info:
+      description: "DeepSeek V3.1 via DeepSeek API (China-based). Primary cheap mid-tier model. NOT for proprietary code. Use local/deepseek-r1:* for safe self-hosted alternative."
+
   - model_name: deepseek/v4-flash
     litellm_params:
       model: "deepseek/deepseek-chat"
