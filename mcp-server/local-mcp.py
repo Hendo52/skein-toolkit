@@ -488,6 +488,7 @@ def fetch_page(url: str, max_chars: int = 8000) -> str:
 # ---------------------------------------------------------------------------
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import re
@@ -1733,13 +1734,22 @@ def _load_orchestrator_state(key: str):
 
 
 def _save_orchestrator_state(key: str, state: dict) -> None:
+    """Persist orchestrator state to disk under an advisory lock (AT-1162) so
+    a concurrent writer (e.g. orchestrator_status.py --apply running alongside
+    an active orchestrator request) blocks and retries rather than clobbering
+    the in-flight update."""
     os.makedirs(_ORCHESTRATOR_STATE_DIR, exist_ok=True)
     state["updated"] = datetime.now(timezone.utc).isoformat()
+    path = _orchestrator_state_path(key)
     try:
-        with open(_orchestrator_state_path(key), "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
-    except Exception as e:
-        print(f"[cfproxy][orchestrator] failed to persist state {key}: {e}", file=sys.stderr)
+        with _ledger_lock(path):
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(state, f, indent=2)
+            except Exception as e:
+                print(f"[cfproxy][orchestrator] failed to persist state {key}: {e}", file=sys.stderr)
+    except RuntimeError as e:
+        print(f"[cfproxy][orchestrator] _save_orchestrator_state lock error: {e}", file=sys.stderr)
 
 
 def _orchestrator_log(state: dict, message: str) -> None:
@@ -2129,6 +2139,78 @@ def _format_step_ambiguity_oq(run_key: str, step_idx: int, total: int, step_task
     return question, context, unblocks, _today_utc()
 
 
+# ---------------------------------------------------------------------------
+# Advisory file locking for shared ledger / state read-modify-write cycles
+# (AT-1162). Uses a .lock sidecar file created with O_CREAT|O_EXCL (atomic
+# exclusive creation on every OS Python supports) to prevent two concurrent
+# writers from racing and silently clobbering each other on the OQ ledger,
+# the AT queue, and the orchestrator-state JSON files. No new dependency --
+# stdlib only. ledger_io.py pure functions remain lock-free; locking lives
+# here in the I/O wrappers.
+# ---------------------------------------------------------------------------
+
+_LEDGER_LOCK_TIMEOUT = float(os.environ.get("CF_PROXY_LOCK_TIMEOUT_SECONDS", "10"))
+_LEDGER_LOCK_RETRY_INTERVAL = 0.05  # 50 ms between acquisition attempts
+
+
+@contextlib.contextmanager
+def _ledger_lock(path: str, timeout: float = _LEDGER_LOCK_TIMEOUT):
+    """Cross-platform advisory lock around a shared file read-modify-write.
+
+    Creates a PATH.lock sidecar file with O_CREAT|O_EXCL (atomic on both
+    POSIX and Windows). Retries every _LEDGER_LOCK_RETRY_INTERVAL seconds
+    until `timeout` seconds have elapsed. Releases (deletes) the sidecar
+    on exit regardless of whether the body raised.
+
+    Raises RuntimeError if the lock cannot be acquired within `timeout`
+    seconds -- the caller catches this and returns False / an error string
+    rather than letting it propagate into the FastMCP response frame.
+
+    This is an advisory lock: it only guards against processes that also
+    use _ledger_lock on the same sidecar path (all local-mcp.py write
+    paths do). A process that writes without locking (e.g. an architect
+    hand-editing the file) is not prevented from doing so -- the goal is
+    to protect concurrent MCP-server / orchestrator sessions from each
+    other, not to prevent intentional direct edits."""
+    lock_path = path + ".lock"
+    deadline = time.monotonic() + timeout
+    waited = False
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            break  # acquired
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"[cfproxy][lock] could not acquire advisory lock {lock_path!r} "
+                    f"within {timeout}s -- another writer may be stuck"
+                )
+            if not waited:
+                print(
+                    f"[cfproxy][lock] waiting for advisory lock {lock_path!r} "
+                    f"(another writer holds it)",
+                    file=sys.stderr,
+                )
+                waited = True
+            time.sleep(_LEDGER_LOCK_RETRY_INTERVAL)
+    if waited:
+        print(
+            f"[cfproxy][lock] acquired {lock_path!r} after brief wait",
+            file=sys.stderr,
+        )
+    try:
+        yield
+    finally:
+        try:
+            os.unlink(lock_path)
+        except OSError as exc:
+            print(
+                f"[cfproxy][lock] failed to remove lock file {lock_path!r}: {exc}",
+                file=sys.stderr,
+            )
+
+
 def _append_oq_row(row: str) -> bool:
     """Append a freshly-formatted OQ row directly below the table's header
     separator -- the file's existing convention is newest-first (OQ-258 sits
@@ -2143,28 +2225,36 @@ def _append_oq_row(row: str) -> bool:
     still skips this id even after the row itself is later deleted on
     resolution. A missing marker line is logged, not silently ignored --
     next_oq_id() falls back to its row-scan in that case, which is the
-    pre-fix (CB-18-prone) behavior."""
+    pre-fix (CB-18-prone) behavior.
+
+    AT-1162: the read-modify-write is wrapped in _ledger_lock so a second
+    concurrent writer blocks and retries rather than racing."""
     path = _resolve(ORCHESTRATOR_OQ_LEDGER_PATH)
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            doc_text = f.read()
-    except Exception as e:
-        print(f"[cfproxy][orchestrator] failed to read OQ doc to append a row: {e}", file=sys.stderr)
-        return False
-    row_id_match = re.match(r"^\|\s*OQ-(\d+)\s*\|", row)
-    if row_id_match:
-        doc_text, bumped = ledger_io.bump_oq_high_water_mark(doc_text, int(row_id_match.group(1)))
-        if not bumped:
-            print(f"[cfproxy][orchestrator] OQ high-water-mark marker not found or not raised for {row_id_match.group(0)} -- next_oq_id() will rely on row-scan only", file=sys.stderr)
-    new_text, inserted = ledger_io.insert_oq_row(doc_text, row)
-    if not inserted:
-        print("[cfproxy][orchestrator] OQ doc has no '|---' header separator -- refusing to guess where to insert", file=sys.stderr)
-        return False
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(new_text)
-    except Exception as e:
-        print(f"[cfproxy][orchestrator] failed to write OQ doc after appending a row: {e}", file=sys.stderr)
+        with _ledger_lock(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    doc_text = f.read()
+            except Exception as e:
+                print(f"[cfproxy][orchestrator] failed to read OQ doc to append a row: {e}", file=sys.stderr)
+                return False
+            row_id_match = re.match(r"^\|\s*OQ-(\d+)\s*\|", row)
+            if row_id_match:
+                doc_text, bumped = ledger_io.bump_oq_high_water_mark(doc_text, int(row_id_match.group(1)))
+                if not bumped:
+                    print(f"[cfproxy][orchestrator] OQ high-water-mark marker not found or not raised for {row_id_match.group(0)} -- next_oq_id() will rely on row-scan only", file=sys.stderr)
+            new_text, inserted = ledger_io.insert_oq_row(doc_text, row)
+            if not inserted:
+                print("[cfproxy][orchestrator] OQ doc has no '|---' header separator -- refusing to guess where to insert", file=sys.stderr)
+                return False
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(new_text)
+            except Exception as e:
+                print(f"[cfproxy][orchestrator] failed to write OQ doc after appending a row: {e}", file=sys.stderr)
+                return False
+    except RuntimeError as e:
+        print(f"[cfproxy][orchestrator] _append_oq_row lock error: {e}", file=sys.stderr)
         return False
     return True
 
@@ -2459,23 +2549,31 @@ def _append_at_row(row: str) -> bool:
     (and logs) if the insertion point can't be found -- the caller must not
     silently lose an AT it believes it created. The "where in the text does
     this go" logic lives in ledger_io.insert_at_row (unit tested); this
-    function is just the file I/O + path resolution around it."""
+    function is just the file I/O + path resolution around it.
+
+    AT-1162: the read-modify-write is wrapped in _ledger_lock so a second
+    concurrent writer blocks and retries rather than racing."""
     path = _resolve(AT_QUEUE_PATH)
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            queue_text = f.read()
-    except Exception as e:
-        print(f"[cfproxy][taskqueue] failed to read AT queue to append a row: {e}", file=sys.stderr)
-        return False
-    new_text, inserted = ledger_io.insert_at_row(queue_text, row)
-    if not inserted:
-        print(f"[cfproxy][taskqueue] AT queue has no '{_AT_INTAKE_HEADING}' subsection with a table separator and no '{_AT_READY_POOL_HEADING_PREFIX}' heading -- refusing to guess where to insert", file=sys.stderr)
-        return False
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(new_text)
-    except Exception as e:
-        print(f"[cfproxy][taskqueue] failed to write AT queue after appending a row: {e}", file=sys.stderr)
+        with _ledger_lock(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    queue_text = f.read()
+            except Exception as e:
+                print(f"[cfproxy][taskqueue] failed to read AT queue to append a row: {e}", file=sys.stderr)
+                return False
+            new_text, inserted = ledger_io.insert_at_row(queue_text, row)
+            if not inserted:
+                print(f"[cfproxy][taskqueue] AT queue has no '{_AT_INTAKE_HEADING}' subsection with a table separator and no '{_AT_READY_POOL_HEADING_PREFIX}' heading -- refusing to guess where to insert", file=sys.stderr)
+                return False
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(new_text)
+            except Exception as e:
+                print(f"[cfproxy][taskqueue] failed to write AT queue after appending a row: {e}", file=sys.stderr)
+                return False
+    except RuntimeError as e:
+        print(f"[cfproxy][taskqueue] _append_at_row lock error: {e}", file=sys.stderr)
         return False
     return True
 
