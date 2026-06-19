@@ -528,6 +528,48 @@ _FUNC_CALL_RE = re.compile(
     re.DOTALL
 )
 
+# AT-1245: a narrow subset of _KNOWN_TOOLS above -- specifically the tool
+# names Cline's own system prompt registers regardless of which MCP servers
+# are connected, used to scope the multi-step interceptor (below) to Cline
+# traffic specifically. attempt_completion/ask_followup_question/
+# plan_mode_respond are Cline-specific concepts vanishingly unlikely to
+# appear in another OpenAI-compatible client's tool definitions.
+_CLINE_DISTINCTIVE_TOOL_NAMES = {"attempt_completion", "ask_followup_question", "plan_mode_respond"}
+
+
+def _is_cline_traffic(body: dict) -> bool:
+    """True if this request's `tools` array includes at least one of
+    Cline's own distinctive built-in tool names.
+
+    Found 2026-06-19 (AT-1245): the multi-step interceptor
+    (_detect_multi_step_ask, used below) was built and tested only against
+    Cline traffic, with no way to exclude any other OpenAI-compatible
+    client hitting the same cf/* models. A real aider-evaluation task
+    message (long, multi-verb -- exactly _detect_multi_step_ask's documented
+    trigger shape) got silently decomposed into 3 separate autonomous
+    orchestrator runs, invisible to both aider and the operator, discovered
+    only by chance via an OQ-ledger diff. aider's diff-edit-format mode (the
+    one used in that evaluation) sends no `tools` array at all -- it doesn't
+    use native tool-calling, it parses SEARCH/REPLACE text itself -- so this
+    check correctly excludes it.
+
+    Defaults to False (do not intercept) for any request without a
+    recognized Cline tool name, per the Validator-at-the-Boundary policy:
+    this is an opt-in allowlist of known-Cline traffic, not a denylist of
+    known-bad clients that would need updating every time a new client
+    shows up."""
+    tools = body.get("tools")
+    if not isinstance(tools, list):
+        return False
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        name = fn.get("name") if isinstance(fn, dict) else tool.get("name")
+        if name in _CLINE_DISTINCTIVE_TOOL_NAMES:
+            return True
+    return False
+
 
 def _strip_wrapper(content: str) -> str:
     """
@@ -3694,6 +3736,16 @@ async def _cf_proxy(request: StarletteRequest):
     # array to find the user's ask in); other CF endpoints pass through untouched.
     # See _detect_multi_step_ask for why this exists and what evidence backs it.
     #
+    # AT-1245 (2026-06-19): also gated on _is_cline_traffic(body) now. This
+    # interceptor was built and tested only against Cline traffic, with no
+    # way to exclude any other OpenAI-compatible client hitting the same
+    # cf/* models -- a real aider-evaluation task message (long, multi-verb,
+    # exactly the shape below detects) was silently decomposed into 3
+    # separate autonomous orchestrator runs, invisible to both aider and the
+    # operator, discovered only by chance via an OQ-ledger diff. See
+    # _is_cline_traffic's docstring for the detection signal and why it
+    # defaults to NOT intercepting unrecognized callers.
+    #
     # Auto-confirms and dispatches step 1 immediately rather than proposing the
     # breakdown via ask_followup_question and waiting for an architect reply to
     # confirm it: there is no turn on which that reply can arrive (Cline
@@ -3709,7 +3761,11 @@ async def _cf_proxy(request: StarletteRequest):
     # git snapshots, automatic YES/NO/AMBIGUOUS validation, the bounded
     # ambiguity-OQ escalation, the step cap, and the daily spend cap -- none of
     # which require a human reply to function.
-    if isinstance(body.get("messages"), list) and not _conversation_has_tool_use(body["messages"]):
+    if (
+        isinstance(body.get("messages"), list)
+        and not _conversation_has_tool_use(body["messages"])
+        and _is_cline_traffic(body)
+    ):
         messages = body["messages"]
         user_message = _latest_user_message(body)
         architect_ask = _strip_cline_injected_context(user_message)

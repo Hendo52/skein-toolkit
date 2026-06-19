@@ -108,5 +108,68 @@ class TestDetectMultiStepAfterStrip(unittest.TestCase):
         self.assertFalse(is_multi)
 
 
+class TestIsClineTraffic(unittest.TestCase):
+    """AT-1245: the multi-step interceptor must not fire on non-Cline
+    OpenAI-compatible traffic. Found 2026-06-19: a real aider-evaluation
+    task message got silently decomposed into 3 separate autonomous
+    orchestrator runs."""
+
+    def test_cline_style_tools_array_detected(self):
+        body = {
+            "messages": [{"role": "user", "content": "do the thing"}],
+            "tools": [
+                {"type": "function", "function": {"name": "write_to_file", "parameters": {}}},
+                {"type": "function", "function": {"name": "attempt_completion", "parameters": {}}},
+            ],
+        }
+        self.assertTrue(local_mcp._is_cline_traffic(body))
+
+    def test_no_tools_array_at_all_is_not_cline(self):
+        # The exact real shape of an aider diff-edit-format request this
+        # session's AT-1189 evaluation actually sent -- no tools array,
+        # since aider parses SEARCH/REPLACE text itself rather than using
+        # native tool-calling.
+        body = {"messages": [{"role": "user", "content": "Add advisory file locking..."}]}
+        self.assertFalse(local_mcp._is_cline_traffic(body))
+
+    def test_empty_tools_array_is_not_cline(self):
+        body = {"messages": [{"role": "user", "content": "x"}], "tools": []}
+        self.assertFalse(local_mcp._is_cline_traffic(body))
+
+    def test_tools_array_with_unrelated_names_is_not_cline(self):
+        # A hypothetical future client that does use tool-calling, but for
+        # something else entirely -- must not be misidentified as Cline.
+        body = {
+            "messages": [{"role": "user", "content": "x"}],
+            "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}],
+        }
+        self.assertFalse(local_mcp._is_cline_traffic(body))
+
+    def test_malformed_tools_entries_do_not_crash(self):
+        body = {"messages": [{"role": "user", "content": "x"}], "tools": ["not-a-dict", 42, None]}
+        self.assertFalse(local_mcp._is_cline_traffic(body))
+
+    def test_multi_step_message_without_cline_tools_is_not_intercepted_logic(self):
+        # Direct check of the underlying signal this AT gates on: a real,
+        # genuinely multi-step-shaped message (the same one used above to
+        # confirm _detect_multi_step_ask fires) must still report
+        # is_cline_traffic=False when sent with no tools array, confirming
+        # the combined gate (messages-is-list AND no-tool-use-yet AND
+        # is_cline_traffic) would correctly skip interception for it.
+        msg = (
+            "Search the repo for all uses of BisectorClip and analyze each call site to "
+            "understand what data it consumes. Then create a detailed refactoring plan that "
+            "separates the clip algorithm from the zone classification concerns. Then implement "
+            "the first step of the plan (extract the bisector-plane intersection math into a "
+            "standalone module) and test it with a focused unit test. Finally install the "
+            "refactored module into the LoftGeometry pipeline and verify integration by running "
+            "the existing BisectorClipTest suite to confirm no regressions."
+        )
+        is_multi, _ = _detect(_strip(msg))
+        self.assertTrue(is_multi, "sanity check: this message is still genuinely multi-step-shaped")
+        body = {"messages": [{"role": "user", "content": msg}]}
+        self.assertFalse(local_mcp._is_cline_traffic(body), "no tools array -- must not be treated as Cline")
+
+
 if __name__ == "__main__":
     unittest.main()
