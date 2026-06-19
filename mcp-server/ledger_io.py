@@ -203,12 +203,46 @@ _AT_TABLE_HEADER = "| ID | Task | Spec / Issue | Exit Evidence | Effort | Depend
 _AT_TABLE_SEP = "|----|------|-------------|---------------|--------|------------|\n"
 
 
+_AT_HIGH_WATER_MARK_RE = re.compile(r"\*\*Highest AT ID ever minted[^:]*:\*\*\s*(\d+)")
+
+
 def next_at_id(queue_text: str) -> int:
     """Pick the next free AT id: the highest AT-<N> referenced anywhere in
     ai-task-queue.md, plus 1. `.N` subtask suffixes (e.g. AT-1146.2) are
-    ignored -- the regex captures only the base number before any '.'."""
+    ignored -- the regex captures only the base number before any '.'.
+
+    CB-26 fix (2026-06-19, the same class of bug as CB-18's OQ-id fix):
+    found when ai-task-queue.md grew to ~232K tokens -- large enough to
+    exceed a real model's context window and break Cline mid-task -- and
+    the fix (archiving struck-through/Done rows to a separate file, mirroring
+    the OQ ledger's resolved-row policy) would have silently re-minted
+    already-used AT ids once their rows left the live document, exactly
+    like CB-18 before the OQ marker line existed. The doc's '**Highest AT ID
+    ever minted...:** N' marker line is the persistent source of truth that
+    survives row archival; live-table rows are still scanned too (belt-and-
+    suspenders for a doc where the marker line was edited by hand and
+    drifted) and the higher of the two wins."""
     ids = [int(m) for m in re.findall(r"AT-(\d+)", queue_text)]
-    return (max(ids) if ids else 0) + 1
+    row_max = max(ids) if ids else 0
+    marker_match = _AT_HIGH_WATER_MARK_RE.search(queue_text)
+    marker_max = int(marker_match.group(1)) if marker_match else 0
+    return max(row_max, marker_max) + 1
+
+
+def bump_at_high_water_mark(doc_text: str, at_id: int) -> "tuple[str, bool]":
+    """Raise the doc's '**Highest AT ID ever minted...:** N' marker to at_id
+    if at_id is higher than the current marker value. Returns (doc_text,
+    False) unchanged if no marker line is found, or if at_id does not exceed
+    the current value -- the caller must not silently lose the marker."""
+    match = _AT_HIGH_WATER_MARK_RE.search(doc_text)
+    if match is None:
+        return doc_text, False
+    current = int(match.group(1))
+    if at_id <= current:
+        return doc_text, False
+    start, end = match.span(1)
+    new_text = doc_text[:start] + str(at_id) + doc_text[end:]
+    return new_text, True
 
 
 def format_at_row(at_id: int, description: str, spec_issue: str, dependencies: str,

@@ -188,6 +188,52 @@ class TestNextAtId(unittest.TestCase):
     def test_empty_queue_starts_at_one(self):
         self.assertEqual(ledger_io.next_at_id(""), 1)
 
+    def test_uses_high_water_mark_when_rows_have_been_archived(self):
+        # CB-26: mirrors TestNextOqId.test_uses_high_water_mark_when_rows_have_been_cleaned_up
+        # -- after archiving high-numbered Done rows out of the live doc, the
+        # marker (not a live row) must be what prevents id reuse.
+        doc = (
+            "**Highest AT ID ever minted (do not reuse below this number):** 1245\n\n"
+            "| AT-1184 | **Ready** | spec | evidence | Small | -- |\n"
+        )
+        self.assertEqual(ledger_io.next_at_id(doc), 1246)
+
+    def test_row_scan_wins_when_higher_than_marker(self):
+        doc = (
+            "**Highest AT ID ever minted (do not reuse below this number):** 1184\n\n"
+            "| AT-1245 | **Ready** | spec | evidence | Small | -- |\n"
+        )
+        self.assertEqual(ledger_io.next_at_id(doc), 1246)
+
+    def test_missing_marker_falls_back_to_row_scan(self):
+        doc = "| AT-1184 | **Ready** | spec | evidence | Small | -- |\n"
+        self.assertEqual(ledger_io.next_at_id(doc), 1185)
+
+
+class TestBumpAtHighWaterMark(unittest.TestCase):
+    _DOC = "**Highest AT ID ever minted (do not reuse below this number):** 1245\n\nbody\n"
+
+    def test_raises_marker_when_new_id_is_higher(self):
+        new_doc, bumped = ledger_io.bump_at_high_water_mark(self._DOC, 1246)
+        self.assertTrue(bumped)
+        self.assertIn("Highest AT ID ever minted (do not reuse below this number):** 1246", new_doc)
+
+    def test_noop_when_new_id_not_higher(self):
+        new_doc, bumped = ledger_io.bump_at_high_water_mark(self._DOC, 1000)
+        self.assertFalse(bumped)
+        self.assertEqual(new_doc, self._DOC)
+
+    def test_noop_when_new_id_equal(self):
+        new_doc, bumped = ledger_io.bump_at_high_water_mark(self._DOC, 1245)
+        self.assertFalse(bumped)
+        self.assertEqual(new_doc, self._DOC)
+
+    def test_missing_marker_returns_unchanged_and_false(self):
+        doc = "no marker here\n"
+        new_doc, bumped = ledger_io.bump_at_high_water_mark(doc, 1300)
+        self.assertFalse(bumped)
+        self.assertEqual(new_doc, doc)
+
 
 class TestFormatAtRow(unittest.TestCase):
     def test_ready_state_has_no_prefix(self):
