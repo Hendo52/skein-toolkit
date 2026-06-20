@@ -91,6 +91,17 @@ foreach ($report in $reports) {
         if ($failingSmoke.Count -gt 0) { $detailParts += "launcher crashed: $($failingSmoke -join '; ')" }
         $detail = if ($detailParts.Count -gt 0) { $detailParts -join " | " } else { "see log" }
 
+        # BurntToast's XML template chokes on raw control characters --
+        # found running this live: a smoke-test failure detail captured a
+        # subprocess's colored log output verbatim, including a raw ANSI
+        # escape byte (0x1B), which broke New-BurntToastNotification with
+        # "hexadecimal value 0x1B, is an invalid character." Strip C0
+        # control chars (keep nothing below 0x20 except none -- a toast is
+        # single-line anyway) and cap length so a long traceback doesn't
+        # produce an unreadable wall of text in a notification.
+        $detail = -join ($detail.ToCharArray() | Where-Object { [int]$_ -ge 0x20 -or $_ -eq "`t" })
+        if ($detail.Length -gt 200) { $detail = $detail.Substring(0, 200) + "..." }
+
         try {
             Import-Module BurntToast -ErrorAction Stop
             New-BurntToastNotification `

@@ -167,6 +167,41 @@ class TestSmokeTestEntrypoint(unittest.TestCase):
         time.sleep(1)
         self.assertFalse(psutil.pid_exists(child_pid), "child process survived the launcher's kill -- orphan leaked")
 
+    def test_timeout_handling_kills_the_tree_twice_with_a_gap(self):
+        """Second real incident, 2026-06-20, found running THIS fix live:
+        tray.py's own ServiceManager._ensure_running polls each service's
+        health sequentially before starting the next, so a slow-starting
+        service (Odysseus's uvicorn, and the 4 MCP sub-servers it spawns
+        in turn) can still be mid-spawn at the exact instant the smoke
+        test's timeout fires and the first taskkill /T takes its process-
+        tree snapshot -- a child that finishes Popen()-ing a moment after
+        that snapshot is not in it, and survives as a real orphan even
+        though the first kill pass "worked" by its own logic. Confirmed by
+        direct reproduction against the real tray.py: a single kill pass
+        sometimes left Odysseus's uvicorn + its 4 MCP children alive for
+        minutes; a second pass after a short delay caught the stragglers
+        in every reproduction after this fix (4 consecutive clean runs).
+        That race is inherently OS-timing-dependent and not reliably
+        reproducible deterministically in a unit test -- this test instead
+        pins down the behavior the fix actually relies on: two kill passes
+        with a real gap between them, not one."""
+        script = os.path.join(self.tmpdir, "good_launcher2.py")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write("import time\ntime.sleep(600)\n")
+
+        # wraps=, not a bare Mock -- the real kill must still actually run
+        # (and reap the real time.sleep(600) subprocess this test spawns),
+        # this just additionally counts/inspects the calls.
+        with unittest.mock.patch.object(
+            watcher.dispatch_io, "kill_job_process_tree", wraps=watcher.dispatch_io.kill_job_process_tree
+        ) as mock_kill:
+            passed, detail = watcher.smoke_test_entrypoint(self.tmpdir, "good_launcher2.py", timeout=1.0)
+
+        self.assertTrue(passed)
+        self.assertIn("two passes", detail)
+        self.assertEqual(mock_kill.call_count, 2, "must kill the tree twice, to catch children that finish spawning between passes")
+        self.assertEqual(mock_kill.call_args_list[0], mock_kill.call_args_list[1], "both passes must target the same PID")
+
     def test_a_clean_fast_exit_is_treated_as_passing(self):
         script = os.path.join(self.tmpdir, "quick_launcher.py")
         with open(script, "w", encoding="utf-8") as f:

@@ -258,7 +258,22 @@ def smoke_test_entrypoint(
             proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
             pass
-        return True, f"{relative_file_path}: still running after {timeout}s (no early crash) -- killed (whole tree) for cleanup"
+        # Second real incident, 2026-06-20, found running THIS fix live:
+        # tray.py's own startup is staged (ServiceManager._ensure_running
+        # polls each service's health sequentially) -- Odysseus's uvicorn,
+        # and the 4 MCP sub-servers IT spawns in turn, can still be mid-
+        # spawn at the exact instant the first taskkill /T takes its
+        # process-tree snapshot. A child that finishes Popen()-ing a
+        # moment after that snapshot is not in it, and survives as a real
+        # orphan even though the tree-kill "worked" by its own logic.
+        # Confirmed by reproducing in isolation: a single kill sometimes
+        # left Odysseus's uvicorn + its 4 MCP children alive for minutes;
+        # a short delay then a second pass over the same PID (already-
+        # dead PIDs are a harmless no-op for taskkill) caught the
+        # late-spawned stragglers in every reproduction after this fix.
+        time.sleep(1.5)
+        dispatch_io.kill_job_process_tree(proc.pid)
+        return True, f"{relative_file_path}: still running after {timeout}s (no early crash) -- killed (whole tree, two passes) for cleanup"
 
     if proc.returncode != 0:
         tail = "\n".join(stdout.strip().splitlines()[-15:]) if stdout else "(no output captured)"
