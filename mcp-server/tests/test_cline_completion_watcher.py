@@ -203,6 +203,65 @@ class TestResolvePythonFor(unittest.TestCase):
             shutil.rmtree(tmpdir)
 
 
+class TestRunTestSuite(unittest.TestCase):
+    """Real incident, 2026-06-20 (found running this live): a relative path
+    like "venv\\Scripts\\python.exe" does NOT resolve relative to
+    subprocess.run's cwd= parameter on Windows -- the executable (argv[0])
+    is resolved against the CALLING process's own cwd and PATH, not the
+    child's. Every odysseus test run failed with "[WinError 2] The system
+    cannot find the file specified" despite the venv genuinely existing.
+    Same root cause for "npm" -- it's actually npm.cmd on Windows, and
+    subprocess.run without shell=True doesn't search PATHEXT."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_returns_none_when_no_command_configured(self):
+        self.assertIsNone(watcher.run_test_suite("Electron-Splines-typo-not-real", self.tmpdir))
+
+    def test_venv_python_sentinel_resolves_to_an_absolute_working_path(self):
+        venv_dir = os.path.join(self.tmpdir, "venv", "Scripts")
+        os.makedirs(venv_dir)
+        # A real, tiny "python" stand-in that just exits 0 -- proves the
+        # sentinel resolved to THIS file and it was actually invoked,
+        # not that some unrelated python happened to be found on PATH.
+        fake_python = os.path.join(venv_dir, "python.exe")
+        with open(fake_python, "wb") as f:
+            f.write(b"")
+        with unittest.mock.patch.object(
+            watcher, "TEST_COMMANDS", {**watcher.TEST_COMMANDS, "_test_repo": ["<REPO_VENV_PYTHON>", "--version"]}
+        ):
+            result = watcher.run_test_suite("_test_repo", self.tmpdir)
+        # An empty file isn't a real executable, so this fails to launch --
+        # but the failure message must show it tried the REAL resolved
+        # absolute path, not the literal sentinel string or a wrong guess.
+        # (Comparing substrings, not the full path, since the exception's
+        # own repr() backslash-escapes the path differently than the raw
+        # string does.)
+        self.assertIsNotNone(result)
+        passed, detail = result
+        self.assertFalse(passed)
+        self.assertNotIn("<REPO_VENV_PYTHON>", detail)
+        self.assertIn(os.path.basename(self.tmpdir), detail)
+        self.assertIn("python.exe", detail)
+
+    def test_npm_resolves_via_shutil_which_not_a_bare_name(self):
+        import shutil
+        real_npm = shutil.which("npm")
+        if not real_npm:
+            self.skipTest("npm not installed/on PATH in this environment")
+        with unittest.mock.patch.object(watcher.subprocess, "run") as mock_run:
+            mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            watcher.run_test_suite("Electron-Splines", self.tmpdir)
+        called_argv = mock_run.call_args[0][0]
+        self.assertEqual(called_argv[0], real_npm)
+        self.assertNotEqual(called_argv[0], "npm")
+
+
 class TestFindNewCommits(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()

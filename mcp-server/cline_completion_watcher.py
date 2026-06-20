@@ -62,10 +62,19 @@ DEFAULT_REPOS = {
 # directly: package.json's "test" script, this session's own unittest
 # invocation, odysseus's own venv pytest), does not invent a new test
 # mechanism. None = no command configured (skip, don't guess).
+#
+# "<REPO_VENV_PYTHON>" is a sentinel, not a literal path: a relative path
+# like "venv\Scripts\python.exe" does NOT resolve relative to subprocess.run's
+# cwd= parameter on Windows -- the executable (argv[0]) is resolved against
+# the CALLING process's own cwd and PATH, not the child's. Found 2026-06-20
+# running this for real: every odysseus test run failed with
+# "[WinError 2] The system cannot find the file specified" despite the venv
+# genuinely existing -- run_test_suite substitutes this sentinel with
+# _resolve_python_for(repo_path)'s absolute result at call time instead.
 TEST_COMMANDS: "dict[str, list[str] | None]" = {
     "Electron-Splines": ["npm", "test"],
     "skein-toolkit": [sys.executable, "-m", "unittest", "discover", "-s", "mcp-server/tests", "-p", "test_*.py"],
-    "odysseus": [r"venv\Scripts\python.exe", "-m", "pytest", "tests/", "-q"],
+    "odysseus": ["<REPO_VENV_PYTHON>", "-m", "pytest", "tests/", "-q"],
 }
 
 # Filename patterns that mean "this is a launcher/entrypoint, not a regular
@@ -140,6 +149,7 @@ def find_new_commits(repo_path: str, since_unix_ts: float) -> "list[str]":
         result = subprocess.run(
             ["git", "log", f"--since={since_iso}", "--format=%H"],
             cwd=repo_path, capture_output=True, text=True, timeout=15,
+            encoding="utf-8", errors="replace",
         )
     except (subprocess.TimeoutExpired, OSError):
         return []
@@ -167,6 +177,7 @@ def changed_files_in_commits(repo_path: str, since_unix_ts: float) -> "list[str]
         result = subprocess.run(
             ["git", "log", f"--since={since_iso}", "--name-only", "--format="],
             cwd=repo_path, capture_output=True, text=True, timeout=30,
+            encoding="utf-8", errors="replace",
         )
     except (subprocess.TimeoutExpired, OSError):
         return []
@@ -220,6 +231,7 @@ def smoke_test_entrypoint(
     try:
         proc = subprocess.Popen(
             argv, cwd=repo_path, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            encoding="utf-8", errors="replace",
         )
     except OSError as exc:
         return False, f"{relative_file_path}: failed to even start -- {exc}"
@@ -259,15 +271,32 @@ def run_test_suite(repo_name: str, repo_path: str) -> "tuple[bool, str] | None":
     no command is configured -- that's a real gap to report, not a failure
     to claim. Never invents a test command for a repo that doesn't have one
     confirmed."""
-    cmd = TEST_COMMANDS.get(repo_name)
-    if cmd is None:
+    template = TEST_COMMANDS.get(repo_name)
+    if template is None:
         return None
+
+    cmd = list(template)
+    if cmd[0] == "<REPO_VENV_PYTHON>":
+        cmd[0] = _resolve_python_for(repo_path)
+    elif cmd[0] == "npm":
+        # Same class of bug as the venv-python sentinel above: "npm" is
+        # actually "npm.cmd" on Windows, and subprocess.run without
+        # shell=True does not search PATHEXT the way a real shell would.
+        # shutil.which does the same PATHEXT-aware search a shell uses.
+        import shutil
+        resolved = shutil.which("npm")
+        if resolved:
+            cmd[0] = resolved
+
     try:
-        result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, timeout=180)
+        result = subprocess.run(
+            cmd, cwd=repo_path, capture_output=True, text=True, timeout=180,
+            encoding="utf-8", errors="replace",
+        )
     except subprocess.TimeoutExpired:
         return False, f"test command timed out after 180s: {' '.join(cmd)}"
     except OSError as exc:
-        return False, f"test command failed to start: {exc}"
+        return False, f"test command failed to start (resolved as {cmd[0]!r}): {exc}"
     passed = result.returncode == 0
     tail = "\n".join((result.stdout + result.stderr).strip().splitlines()[-15:])
     return passed, tail
