@@ -2642,6 +2642,56 @@ def _append_at_row(row: str) -> bool:
     return True
 
 
+def check_at_exit_evidence_path(exit_evidence: str) -> "str | None":
+    """REQ-5 / TOOL-2 (AT-1248): detect ambiguous `../`-prefixed output paths
+    in an AT row's exit-evidence field and return a diagnostic string, or None
+    if the path looks clean.
+
+    Root cause (AT-1196, 2026-06-20): an AT row whose exit-evidence path was
+    written as `../skein-toolkit/docs/goose-evaluation.md` resolved correctly
+    when read from inside the Electron-Splines repo (where `../skein-toolkit/`
+    is a real sibling directory), but resolved to the *wrong location entirely*
+    when the task was dispatched and Cline ran from inside an isolated git
+    worktree (e.g. `skein-toolkit-at-1196-dispatch/`), which is a *sibling*
+    of the real `skein-toolkit/` checkout, not a subdirectory of it.  The
+    file was ultimately written into the worktree's parent directory rather
+    than the real skein-toolkit checkout, and was lost.
+
+    The fix: when an AT targets any repo other than Electron-Splines, write
+    the exit-evidence path relative to *that repo's* root -- e.g.
+    `docs/goose-evaluation.md` instead of `../skein-toolkit/docs/goose-evaluation.md`.
+    A `../`-prefixed path is only correct when read from inside Electron-Splines
+    itself, and Electron-Splines tasks never need to name a sibling repo in
+    their exit evidence anyway (they write to their own tree).
+
+    Returns a REQ-5 conformance error string when a `../` prefix is detected,
+    naming the problematic pattern and the repo-relative form to use instead.
+    Returns None when no `../` prefix is found."""
+    import re
+    # Match any token that looks like a ../-prefixed path (at start of string
+    # or after whitespace / common delimiter chars), capturing the full
+    # ../repo/... token so the diagnostic can show the exact offending pattern.
+    pattern = re.compile(r'(?:^|[\s`\'"(,;])(\.\./[^\s`\'",;)]+)', re.MULTILINE)
+    matches = pattern.findall(exit_evidence)
+    if not matches:
+        return None
+    offending = matches[0]
+    # Derive a repo-relative suggestion: strip the leading ../repo-name/ prefix.
+    repo_relative = re.sub(r'^\.\./[^/]+/', '', offending)
+    return (
+        f"REQ-5 conformance error (AT-1248): exit_evidence contains a "
+        f"`../`-prefixed path ({offending!r}) that resolves correctly only "
+        f"when read from inside Electron-Splines, but resolves to the wrong "
+        f"location when the task runs from an isolated dispatch worktree "
+        f"(a sibling directory, not a subdirectory, of the real checkout). "
+        f"Use the repo-relative form instead -- e.g. {repo_relative!r} -- "
+        f"so the path resolves correctly from inside the dispatch worktree. "
+        f"No row written. (Real incident: AT-1196's exit-evidence "
+        f"`../skein-toolkit/docs/goose-evaluation.md` landed in the wrong "
+        f"directory and was lost; the corrected form is `docs/goose-evaluation.md`.)"
+    )
+
+
 @mcp.tool()
 def create_actionable_task(
     description: str,
@@ -2665,7 +2715,12 @@ def create_actionable_task(
     On a missing/invalid required field, REJECTS -- returns an "ERROR: ..."
     string naming the field(s) and writes nothing. On an I/O failure
     reading/writing the queue, returns an "ERROR: ..." string and writes
-    nothing."""
+    nothing.
+
+    REQ-5 / TOOL-2 (AT-1248): also rejects exit_evidence values that contain
+    a `../`-prefixed path -- such paths only resolve correctly from inside
+    Electron-Splines, not from inside a dispatch worktree (see
+    check_at_exit_evidence_path for the full incident history)."""
     errors: list[str] = []
     if not description or not description.strip():
         errors.append("description")
@@ -2681,6 +2736,10 @@ def create_actionable_task(
         errors.append(f"state (must be one of {_AT_VALID_STATES})")
     if errors:
         return f"ERROR: create_actionable_task rejected -- missing/invalid field(s): {', '.join(errors)}. No row written."
+
+    path_warning = check_at_exit_evidence_path(exit_evidence)
+    if path_warning:
+        return path_warning
 
     if _odysseus_notes_mode_active():
         task_cell = f"**{description}**"

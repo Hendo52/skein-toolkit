@@ -288,9 +288,56 @@ class TestFormatAtRow(unittest.TestCase):
         self.assertEqual(row, "| AT-1200 | **Blocked** -- **Do the thing** | spec | evidence | Small | None |\n")
 
 
+class TestCheckAtExitEvidencePath(unittest.TestCase):
+    """AT-1248 / REQ-5 / TOOL-2. Uses AT-1196's real original exit-evidence
+    wording as the test case, per the AT's own exit evidence requirement --
+    not a synthetic example."""
+
+    def test_at_1196_real_original_wording_is_flagged(self):
+        real_at_1196_exit_evidence = (
+            "`../skein-toolkit/docs/goose-evaluation.md` exists with LiteLLM "
+            "compatibility, Skein MCP tool-calling verdict, Windows support "
+            "status, and contribution target recommendation vs Odysseus; "
+            "commit references AT-1196."
+        )
+        result = local_mcp.check_at_exit_evidence_path(real_at_1196_exit_evidence)
+        self.assertIsNotNone(result)
+        self.assertIn("../skein-toolkit/docs/goose-evaluation.md", result)
+        self.assertIn("docs/goose-evaluation.md", result)
+
+    def test_repo_relative_path_is_not_flagged(self):
+        corrected = (
+            "`docs/goose-evaluation.md` exists with LiteLLM compatibility, "
+            "Skein MCP tool-calling verdict, Windows support status, and "
+            "contribution target recommendation vs Odysseus; commit "
+            "references AT-1196."
+        )
+        self.assertIsNone(local_mcp.check_at_exit_evidence_path(corrected))
+
+    def test_electron_splines_internal_path_is_not_flagged(self):
+        # Electron-Splines tasks write paths relative to their own root,
+        # e.g. "architecture-docs/...", never a ../-prefixed sibling-repo
+        # reference -- nothing to flag here.
+        internal = "architecture-docs/global/current-dashboard.md is updated; commit references this AT."
+        self.assertIsNone(local_mcp.check_at_exit_evidence_path(internal))
+
+
 class TestCreateActionableTask(_LedgerTestCase):
     def _valid_kwargs(self, **overrides):
         return _valid_at_kwargs(**overrides)
+
+    def test_rejects_exit_evidence_with_ambiguous_relative_path(self):
+        """Integration-level: create_actionable_task itself must reject,
+        not just the standalone checker function."""
+        local_mcp.AT_QUEUE_PATH = self._write_ledger(_AT_QUEUE_WITHOUT_INTAKE, ".md")
+        before = open(local_mcp.AT_QUEUE_PATH, encoding="utf-8").read()
+        result = local_mcp.create_actionable_task(**self._valid_kwargs(
+            exit_evidence="`../skein-toolkit/docs/foo.md` exists; commit references this AT."
+        ))
+        self.assertIn("REQ-5", result)
+        self.assertIn("docs/foo.md", result)
+        after = open(local_mcp.AT_QUEUE_PATH, encoding="utf-8").read()
+        self.assertEqual(before, after, "no row should be written when rejected")
 
     def test_rejects_missing_description(self):
         local_mcp.AT_QUEUE_PATH = self._write_ledger(_AT_QUEUE_WITHOUT_INTAKE, ".md")
