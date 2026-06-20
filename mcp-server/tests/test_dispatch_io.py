@@ -144,6 +144,18 @@ class TestResolveModelForTier(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("phi4-reasoning", dispatch_io.TIER_MODEL_CANDIDATES["Tier-M"])
         self.assertTrue(all("phi4" not in m for m in dispatch_io.TIER_MODEL_CANDIDATES["Tier-M"]))
 
+    def test_tier_r_does_not_try_qwen_7b_first(self):
+        # Real incident (2026-06-20, AT-1196): qwen2.5-coder:7b probed
+        # reachable and ran to exit 0, but never made a real tool call --
+        # it hallucinated a fake one instead, producing zero files/commits.
+        # ai-model-selection-policy.md S8.1 already documented this exact
+        # failure mode ("works as a chat model but not as an agent") before
+        # this list was written. dispatch_coding_task is always a full
+        # agentic Cline session, so this candidate must never be tried
+        # before a model with a confirmed working agent loop.
+        candidates = dispatch_io.TIER_MODEL_CANDIDATES["Tier-R"]
+        self.assertNotEqual(candidates[0], "local/qwen2.5-coder:7b")
+
 
 class TestJobState(unittest.TestCase):
     def setUp(self):

@@ -577,6 +577,14 @@ rather than as structured `tool_calls` in the API response, breaking the loop.
 **Known broken in Continue.dev with `provider: ollama` (outputs raw JSON tool calls as text):**
 - `qwen2.5-coder:7b` — intercepted by Continue but model stops generating after tool call JSON;
   agent loop does not complete. Works as a chat model but not as an agent.
+  **Confirmed again independently 2026-06-20 (AT-1196, via Cline/dispatch_coding_task, a
+  different agent client than Continue.dev):** probed reachable, ran to completion (exit 0,
+  64.9s), but instead of any real tool call it printed a hand-rolled JSON blob inventing a
+  nonexistent command (`"command": "eval_goose"`) — zero files written, zero commits. This is
+  the same underlying failure (no structured `tool_calls` in the response, just JSON-shaped
+  text), reproduced on a second, independent agent harness. `dispatch_io.py`'s
+  `TIER_MODEL_CANDIDATES["Tier-R"]` listed this model first despite this finding already being
+  on record here — fixed 2026-06-20 to try a confirmed-working agent (`cf/kimi-k2.6`) first.
 
 **Note:** The `provider: ollama` Continue.dev configuration uses text-based tool parsing. Switch
 to `provider: openai` with `apiBase: http://localhost:11434/v1` to use structured API function

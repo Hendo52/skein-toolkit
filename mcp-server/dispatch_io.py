@@ -48,12 +48,27 @@ import psutil
 # document and isn't named in it.
 #
 # Tier-M's first listed Local-Reason option (phi4-reasoning) is deliberately
-# EXCLUDED here: that tier has no tool-calling capability at all (policy S6),
-# so it cannot run as a Cline agent regardless of how well-suited it is for
-# manual math consultation. Listing it here would be a candidate dispatch_
-# coding_task could never actually use.
+# EXCLUDED here: that tier has no tool-calling capability at all (policy
+# S6/S8.1), so it cannot run as a Cline agent regardless of how well-suited
+# it is for manual math consultation. Listing it here would be a candidate
+# dispatch_coding_task could never actually use.
+#
+# Tier-R's first candidate is NOT local/qwen2.5-coder:7b, for the identical
+# reason -- ai-model-selection-policy.md S8.1 already documents it directly:
+# "intercepted by Continue but model stops generating after tool call JSON;
+# agent loop does not complete. Works as a chat model but not as an agent."
+# dispatch_coding_task is ALWAYS a full agentic Cline session (never a bare
+# completion), so this finding applies here exactly as it does to Tier-M's
+# exclusion above -- it just wasn't cross-referenced when this list was
+# first written. Confirmed again directly, 2026-06-20 (AT-1196): dispatched
+# for real, probed reachable, ran 64.9s exit 0, produced a hand-rolled JSON
+# blob inventing a fake tool ("eval_goose") instead of any real tool call --
+# zero files written, zero commits. cf/kimi-k2.6 retried the identical task
+# and made real tool calls throughout. qwen2.5-coder:7b stays listed (last)
+# for the rare case every agentic candidate is unreachable -- something is
+# better than an outright dispatch failure -- but is never tried first.
 TIER_MODEL_CANDIDATES: dict[str, tuple[str, ...]] = {
-    "Tier-R": ("local/qwen2.5-coder:7b", "cf/kimi-k2.6", "local/qwen2.5-coder:32b"),
+    "Tier-R": ("cf/kimi-k2.6", "local/qwen2.5-coder:32b", "local/qwen2.5-coder:7b"),
     "Tier-C": ("claude/sonnet-4", "cf/kimi-k2.6", "local/deepseek-r1:32b"),
     "Tier-M": ("claude/sonnet-4", "local/deepseek-r1:32b", "local/llama3.3:70b"),
 }
