@@ -456,16 +456,26 @@ def delete_local_branch(repo_root: str, branch_name: str) -> "tuple[bool, str]":
 
 def build_task_prompt(at_id: int, at_row: dict, repo_root_for_paths: str) -> str:
     """Builds a self-contained Cline task prompt from a parsed AT row
-    (ledger_io.parse_at_row's return shape), matching the structure used by
-    hand throughout this session: CLAUDE.md/conventions reminder, the AT's
-    own description/spec references verbatim, scope/exit-evidence as
-    explicit acceptance criteria, and the commit-hygiene instruction."""
+    (ledger_io.parse_at_row's return shape): CLAUDE.md/conventions reminder,
+    the AT's own description/spec references verbatim, scope/exit-evidence
+    as explicit acceptance criteria, and the commit-hygiene instruction.
+
+    Real incident (2026-06-20, AT-1196 dispatched into skein-toolkit): the
+    prior wording named a specific ai-task-queue.md path inside whichever
+    repo the work happens to target, and asserted Electron-Splines-specific
+    CLAUDE.md section names (e.g. "TypeScript section") unconditionally --
+    both false when the dispatch target isn't Electron-Splines. The model
+    burned several tool calls hunting across sibling repos for files that
+    don't exist at the asserted path. Fix: don't tell the model to go reread
+    the ledger at all (the description/spec/exit-evidence below are already
+    the full extracted content, no re-read needed), and word the CLAUDE.md
+    instruction generically rather than naming specific sections."""
     return (
-        f"Implement AT-{at_id} from {repo_root_for_paths}'s "
-        f"architecture-docs/global/ai-task-queue.md.\n\n"
-        f"Read CLAUDE.md first (repo root) and follow its conventions: "
-        f"TypeScript section, Naming Enforcement Policy, encoding hygiene "
-        f"(ASCII-only in source), commit hygiene policy.\n\n"
+        f"You are implementing AT-{at_id} (full description below -- this "
+        f"is already the complete extracted task, no need to re-read any "
+        f"ai-task-queue.md file).\n\n"
+        f"Read this repo's CLAUDE.md in its root, if one exists, and follow "
+        f"its conventions before making changes.\n\n"
         f"Task:\n{at_row['description']}\n\n"
         f"Spec / Issue references: {at_row['spec_issue']}\n\n"
         f"Exit evidence required (treat as acceptance criteria): "

@@ -333,6 +333,23 @@ class TestBuildTaskPrompt(unittest.TestCase):
         self.assertIn("the thing is done", prompt)
         self.assertIn("CLAUDE.md", prompt)
 
+    def test_does_not_assert_a_specific_ledger_path_or_repo_specific_sections(self):
+        """Real incident (2026-06-20): AT-1196 dispatched into skein-toolkit
+        burned several tool calls because the prompt asserted a specific
+        ai-task-queue.md path inside the dispatch target and named
+        Electron-Splines-specific CLAUDE.md sections (e.g. "TypeScript
+        section") unconditionally -- both false for non-Electron-Splines
+        dispatch targets. The prompt must stay repo-agnostic."""
+        at_row = {
+            "description": "Do the thing",
+            "spec_issue": "some-spec.md",
+            "exit_evidence": "the thing is done",
+        }
+        prompt = dispatch_io.build_task_prompt(1228, at_row, "C:/some/other/repo")
+        self.assertNotIn("architecture-docs/global/ai-task-queue.md", prompt)
+        self.assertNotIn("TypeScript section", prompt)
+        self.assertNotIn("C:/some/other/repo", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
