@@ -67,8 +67,16 @@ import psutil
 # and made real tool calls throughout. qwen2.5-coder:7b stays listed (last)
 # for the rare case every agentic candidate is unreachable -- something is
 # better than an outright dispatch failure -- but is never tried first.
+#
+# local/qwen3.6 added 2026-06-20 (same tier review): already pulled (23GB,
+# litellm_config.yaml already lists it as "Best local general model...
+# tools") but had never been added as a dispatch candidate anywhere despite
+# being a better-suited local option than qwen2.5-coder for agentic work --
+# simply never wired in. Placed ahead of the qwen2.5-coder variants as the
+# preferred local-only fallback; cf/kimi-k2.6 still tried first since it's
+# the only candidate with confirmed-reliable real-world agentic runs today.
 TIER_MODEL_CANDIDATES: dict[str, tuple[str, ...]] = {
-    "Tier-R": ("cf/kimi-k2.6", "local/qwen2.5-coder:32b", "local/qwen2.5-coder:7b"),
+    "Tier-R": ("cf/kimi-k2.6", "local/qwen3.6", "local/qwen2.5-coder:32b", "local/qwen2.5-coder:7b"),
     "Tier-C": ("claude/sonnet-4", "cf/kimi-k2.6", "local/deepseek-r1:32b"),
     "Tier-M": ("claude/sonnet-4", "local/deepseek-r1:32b", "local/llama3.3:70b"),
 }

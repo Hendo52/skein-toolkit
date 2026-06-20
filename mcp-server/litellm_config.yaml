@@ -7,11 +7,30 @@
 model_list:
 
   # ─── LOCAL TIER — Ollama (free, runs on local hardware) ───────────────────
+  # num_ctx fix, 2026-06-20 (AT-1196 tier review): every entry below claimed
+  # a large context window in its description but never actually configured
+  # one. Ollama's real runtime default without an explicit num_ctx override
+  # is as low as 2-4k tokens regardless of the model's own architecture --
+  # confirmed via community reports (the most-cited Cline+Ollama failure
+  # mode is exactly this: an agent silently loops/fails once it exceeds the
+  # tiny real default). This is the identical bug class already found and
+  # fixed once before for a different tier: CB-1/CB-7 raised CF gpt-oss's
+  # too-small default max_tokens after it caused degenerate-empty responses
+  # -- the same class of fix (explicit override of a too-small default) was
+  # never applied here. LiteLLM passes num_ctx through to Ollama's native
+  # API as a provider-specific kwarg (confirmed via litellm docs). Values
+  # below are deliberately the documented-capability ceiling for the
+  # smaller/faster models actually used for agentic dispatch, and a more
+  # conservative 65536 (not each model's full 131k/262k claim) for the
+  # larger reasoning models, balancing reliability against this machine's
+  # 8GB-VRAM/64GB-RAM partial-offload constraint (ai-model-selection-
+  # policy.md S4.2).
 
   - model_name: local/qwen2.5-coder:7b
     litellm_params:
       model: ollama/qwen2.5-coder:7b
       api_base: http://localhost:11434
+      num_ctx: 32768
     model_info:
       description: "Fast local coder, tool-use, 32k context. Best for quick edits."
 
@@ -19,6 +38,7 @@ model_list:
     litellm_params:
       model: ollama/qwen2.5-coder:32b
       api_base: http://localhost:11434
+      num_ctx: 32768
     model_info:
       description: "Powerful local coder, tool-use, 32k context."
 
@@ -26,6 +46,7 @@ model_list:
     litellm_params:
       model: ollama/qwen3.6:latest
       api_base: http://localhost:11434
+      num_ctx: 65536
     model_info:
       description: "36B MoE, 262k context, vision + tools + thinking. Best local general model."
 
@@ -33,6 +54,7 @@ model_list:
     litellm_params:
       model: ollama/qwq:32b
       api_base: http://localhost:11434
+      num_ctx: 40960
     model_info:
       description: "QwQ reasoning model, 32B, tool-use, 40k context."
 
@@ -40,6 +62,7 @@ model_list:
     litellm_params:
       model: ollama/deepseek-r1:14b
       api_base: http://localhost:11434
+      num_ctx: 65536
     model_info:
       description: "Compact DeepSeek reasoning, 131k context."
 
@@ -47,6 +70,7 @@ model_list:
     litellm_params:
       model: ollama/deepseek-r1:32b
       api_base: http://localhost:11434
+      num_ctx: 65536
     model_info:
       description: "DeepSeek R1 reasoning, 32B, 131k context."
 
@@ -54,6 +78,7 @@ model_list:
     litellm_params:
       model: ollama/deepseek-r1:70b
       api_base: http://localhost:11434
+      num_ctx: 65536
     model_info:
       description: "Best local reasoning model, 70B, 131k context."
 
@@ -61,6 +86,7 @@ model_list:
     litellm_params:
       model: ollama/llama3.3:70b
       api_base: http://localhost:11434
+      num_ctx: 65536
     model_info:
       description: "Llama 3.3 70B, tool-use, 131k context. Strong general model."
 
