@@ -97,10 +97,63 @@ mechanisms can't provide it on Windows -- researched and ruled out before
 building: hooks have no completion-blocking event and are macOS/Linux only;
 "Double-Check Completion" is text-only self-critique (confirmed by reading
 its actual checklist text -- it never asks the model to re-run anything).
-**Not yet decided:** how this actually gets invoked on a schedule and
-surfaced (manual on-demand vs. a recurring check vs. a real Windows
-Scheduled Task) -- deliberately left open rather than built speculatively
-ahead of that decision.
+**Invocation decided (OQ-300, resolved 2026-06-21): CronCreate re-invokes
+Claude Code periodically**, which runs the watcher, reads its output, and
+calls `PushNotification` only on a real, actionable failure -- never for a
+routine all-clear. The alternative (a Windows Scheduled Task running the
+script with no Claude Code involvement at all) was investigated in real
+depth first; both options' actual costs turned out to be different from
+how they first looked, which is why the investigation itself is documented
+here rather than just the conclusion.
+
+**Tradeoffs discovered, not assumed:**
+
+1. **A durable CronCreate job does not behave like a true background
+   daemon.** Confirmed via direct research, not the tool's own one-line
+   description: while VS Code is closed, a scheduled firing is **silently
+   skipped, not queued** -- at most one catch-up fires the next time the
+   REPL goes idle, regardless of how many firings were missed while
+   closed. Separately, **every recurring CronCreate job hard-expires after
+   7 days**, regardless of the `durable` flag -- it fires once more, then
+   is deleted outright. Both are real reliability gaps for a generic
+   "run something in the background" use case.
+
+2. **Neither gap turned out to matter much for *this specific* use case.**
+   Cline is a VS Code extension -- it cannot be active during the exact
+   window a closed-VS-Code firing would miss, so there is structurally
+   nothing for the watcher to catch during that window anyway. The 7-day
+   expiry remains a real, standing cost, but the architect already checks
+   in with this toolchain daily regardless, making a periodic renewal
+   reminder a tolerable, not a blocking, cost.
+
+3. **The Windows-Scheduled-Task alternative's own cost was tested
+   directly on this machine, not assumed to be simple.** `PushNotification`
+   is a Claude-Code-specific tool, not callable from a standalone script --
+   real alerting would need a separate mechanism. The proper, Action-
+   Center-integrated Windows toast API failed to load cleanly from this
+   PowerShell context without installing the third-party `BurntToast`
+   module (a real external dependency, not "a few lines of code," contrary
+   to the initial assumption that this side would be the easy one). The
+   zero-install fallback (`System.Windows.Forms.NotifyIcon` balloon tip)
+   worked without throwing an exception when tested directly, but is
+   documented to be easy to miss on modern Windows (no persistent Action
+   Center record, can be silently suppressed by Focus Assist) -- a
+   meaningfully worse alerting guarantee than `PushNotification`'s.
+
+4. **Net comparison, once both sides were actually tested rather than
+   estimated:** Option B's real remaining cost (an occasional renewal,
+   already accepted as manageable) turned out smaller than Option A's
+   real remaining cost (a new external module dependency, or an alerting
+   mechanism with a documented reliability gap). The architecture
+   decision changed between the first framing of this OQ and its
+   resolution specifically because of this direct testing -- a real
+   instance of this project's own standing practice (verify, don't
+   estimate) applied to its own tooling-choice process, not just to code.
+
+**Operational note:** the CronCreate job auto-expires 7 days from
+whenever it was last (re)created. There is no standing alert for the
+expiry itself -- renewing it requires either the architect or a future
+session noticing and re-running `CronCreate` with the same prompt/schedule.
 
 ## 4. AT tasks spawned
 
