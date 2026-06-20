@@ -1,8 +1,7 @@
-# Spec: Autonomous Dispatch Risk Framework (AT-1235)
+﻿# Spec: Autonomous Dispatch Risk Framework (AT-1235)
 
 **Date:** 2026-06-19
-**Status:** Draft -- two genuine open design choices surfaced as OQ-295/296
-rather than decided here.
+**Status:** Draft -- OQ-296 resolved 2026-06-20 (Option B: automated/scheduled push via AT-1247). OQ-295 remains open.
 
 ## 1. Framing
 
@@ -82,10 +81,7 @@ is the commit it produced plus that commit's message (this session's own
 commit-message discipline -- citing real evidence, real test counts, real
 file paths -- already functions as the audit trail; see S3.2).
 
-**Open question, not decided here:** should pushing to the remote be
-automated/scheduled rather than left as a manual habit, given the
-architect's own stated forgetfulness (a real, previously-recorded
-constraint, not a hypothetical)? Raised as **OQ-296**.
+**RESOLVED (2026-06-20, Option B via AT-1247):** Pushing to the remote is now automated via `docs/scheduled-git-push.ps1`, a Windows Scheduled Task that runs `git push` across Electron-Splines, skein-toolkit, and odysseus every 4 hours. The script skips repos in transient states (rebase, merge, bisect, cherry-pick, revert) and relies on git's own non-fast-forward refusal as the safety boundary -- it never passes `--force` or any history-rewrite flag.
 
 ### 3.2 Audit logging
 
@@ -156,9 +152,7 @@ action permission check.
   flow now (in anticipation of enabling "require pull request" branch
   protection), or keep today's local-merge implementation until branch
   protection actually requires otherwise?
-- **OQ-296:** Should pushing to the remote (the actual backup mechanism per
-  S3.1) be automated/scheduled, given the architect's own stated
-  forgetfulness, or remain a manual habit?
+- **OQ-296:** ~~Should pushing to the remote (the actual backup mechanism per S3.1) be automated/scheduled, given the architect's own stated forgetfulness, or remain a manual habit?~~ **RESOLVED 2026-06-20 (Option B):** See `docs/scheduled-git-push.ps1` and AT-1247.
 
 ## 5. Explicit non-goal
 
