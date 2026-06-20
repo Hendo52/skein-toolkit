@@ -392,6 +392,139 @@ class TestKillJobProcessTree(unittest.TestCase):
             self.assertTrue(dispatch_io.kill_job_process_tree(999999999))
 
 
+
+class TestKillOrphanedWorktreeProcesses(unittest.TestCase):
+    """Tests for kill_orphaned_worktree_processes (AT-1249 / REQ-6 / TOOL-3).
+
+    Unit tests use a fake psutil process list; the integration test
+    (test_real_orphan_is_killed) spawns a real subprocess and verifies
+    cleanup kills it -- the exit evidence real reproduction."""
+
+    def _make_fake_proc(self, pid, cmdline):
+        killed = []
+        class _FakeProc:
+            info = {"pid": pid, "cmdline": cmdline}
+            def kill(self_inner):
+                killed.append(pid)
+        return _FakeProc(), killed
+
+    def test_empty_worktree_path_returns_empty_list(self):
+        self.assertEqual(dispatch_io.kill_orphaned_worktree_processes(""), [])
+
+    def test_none_cmdline_process_is_skipped(self):
+        class _NullCmdProc:
+            info = {"pid": 999, "cmdline": None}
+            def kill(self):
+                raise AssertionError("should not be called")
+        with patch.object(dispatch_io.psutil, "process_iter", return_value=[_NullCmdProc()]):
+            result = dispatch_io.kill_orphaned_worktree_processes("C:/some/worktree")
+        self.assertEqual(result, [])
+
+    def test_matching_process_is_killed_and_pid_returned(self):
+        proc, killed_list = self._make_fake_proc(
+            4242, ["cline.exe", "--task", "C:\\repos\\skein-at-1249-dispatch"],
+        )
+        with patch.object(dispatch_io.psutil, "process_iter", return_value=[proc]):
+            result = dispatch_io.kill_orphaned_worktree_processes("C:\\repos\\skein-at-1249-dispatch")
+        self.assertEqual(result, [4242])
+        self.assertEqual(killed_list, [4242])
+
+    def test_non_matching_process_is_not_killed(self):
+        proc, killed_list = self._make_fake_proc(1111, ["python.exe", "C:\\repos\\other"])
+        with patch.object(dispatch_io.psutil, "process_iter", return_value=[proc]):
+            result = dispatch_io.kill_orphaned_worktree_processes("C:\\repos\\skein-at-1249-dispatch")
+        self.assertEqual(result, [])
+        self.assertEqual(killed_list, [])
+
+    def test_current_process_is_skipped(self):
+        my_pid = os.getpid()
+        proc, killed_list = self._make_fake_proc(
+            my_pid, ["python.exe", "C:\\repos\\skein-at-1249-dispatch\\something.py"],
+        )
+        with patch.object(dispatch_io.psutil, "process_iter", return_value=[proc]):
+            result = dispatch_io.kill_orphaned_worktree_processes("C:\\repos\\skein-at-1249-dispatch")
+        self.assertEqual(result, [])
+        self.assertEqual(killed_list, [])
+
+    def test_no_such_process_exception_is_swallowed(self):
+        class _VanishingProc:
+            info = {"pid": 7777, "cmdline": ["cline.exe", "C:/repos/skein-at-1249"]}
+            def kill(self):
+                raise dispatch_io.psutil.NoSuchProcess(7777)
+        with patch.object(dispatch_io.psutil, "process_iter", return_value=[_VanishingProc()]):
+            result = dispatch_io.kill_orphaned_worktree_processes("C:/repos/skein-at-1249")
+        self.assertEqual(result, [])
+
+    def test_access_denied_exception_is_swallowed(self):
+        class _ProtectedProc:
+            info = {"pid": 8888, "cmdline": ["cline.exe", "C:/repos/skein-at-1249"]}
+            def kill(self):
+                raise dispatch_io.psutil.AccessDenied(8888)
+        with patch.object(dispatch_io.psutil, "process_iter", return_value=[_ProtectedProc()]):
+            result = dispatch_io.kill_orphaned_worktree_processes("C:/repos/skein-at-1249")
+        self.assertEqual(result, [])
+
+    def test_case_insensitive_path_matching(self):
+        proc, killed_list = self._make_fake_proc(
+            5555, ["cline.EXE", "C:\\Repos\\SKEIN-AT-1249-Dispatch"],
+        )
+        with patch.object(dispatch_io.psutil, "process_iter", return_value=[proc]):
+            result = dispatch_io.kill_orphaned_worktree_processes("C:\\repos\\skein-at-1249-dispatch")
+        self.assertEqual(result, [5555])
+
+    def test_forward_slash_normalization(self):
+        proc, killed_list = self._make_fake_proc(
+            6666, ["cline.exe", "C:/repos/skein-at-1249-dispatch/task.txt"],
+        )
+        with patch.object(dispatch_io.psutil, "process_iter", return_value=[proc]):
+            result = dispatch_io.kill_orphaned_worktree_processes("C:\\repos\\skein-at-1249-dispatch")
+        self.assertEqual(result, [6666])
+    def test_real_orphan_is_killed(self):
+        """AT-1249 exit evidence: spawn a real long-running child process whose
+        argv references a synthetic worktree path, call
+        kill_orphaned_worktree_processes, and confirm the child is dead.
+
+        Reproduces the incident: after the wrapper parent exits, the child
+        survives as an orphan. Cleanup finds and kills by command-line match
+        even though PID lineage no longer connects them."""
+        import shutil
+        import subprocess as _sp
+        import sys as _sys
+        import tempfile
+        import psutil as _psutil
+
+        tmpdir = tempfile.mkdtemp(prefix="at1249_orphan_test_")
+        try:
+            # Spawn a long-running process whose argv contains tmpdir --
+            # stand-in for cline.exe being passed the worktree path.
+            child = _sp.Popen(
+                [_sys.executable, "-c", "import time; time.sleep(600)", tmpdir],
+                stdout=_sp.DEVNULL,
+                stderr=_sp.DEVNULL,
+            )
+            child_pid = child.pid
+            try:
+                self.assertTrue(_psutil.pid_exists(child_pid),
+                                f"child PID {child_pid} did not start")
+
+                killed = dispatch_io.kill_orphaned_worktree_processes(tmpdir)
+
+                self.assertIn(child_pid, killed,
+                              f"child PID {child_pid} not in killed list {killed}")
+                child.wait(timeout=5)
+                self.assertFalse(_psutil.pid_exists(child_pid),
+                                 f"child PID {child_pid} still alive after cleanup")
+            finally:
+                try:
+                    child.kill()
+                    child.wait(timeout=5)
+                except Exception:
+                    pass
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+
 class TestBuildTaskPrompt(unittest.TestCase):
     def test_includes_at_id_description_and_exit_evidence(self):
         at_row = {

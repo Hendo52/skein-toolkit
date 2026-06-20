@@ -2912,6 +2912,16 @@ def get_coding_task_status(job_id: str) -> str:
         state["recent_commits"] = commit_count
         state["updated_at"] = time.time()
         dispatch_io.write_job_state(CODING_TASK_STATE_DIR, job_id, state)
+        # AT-1249 / REQ-6: kill any process whose command line references
+        # the worktree path -- catches orphaned cline.exe children whose
+        # wrapper parent already exited (PID-tree kill misses these).
+        killed = dispatch_io.kill_orphaned_worktree_processes(worktree_path)
+        if killed:
+            print(
+                f"[get_coding_task_status] REQ-6 cleanup: killed {len(killed)} "
+                f"orphaned process(es) referencing {worktree_path!r}: {killed}",
+                file=sys.stderr,
+            )
 
     log_tail = ""
     log_path = state.get("log_path")
