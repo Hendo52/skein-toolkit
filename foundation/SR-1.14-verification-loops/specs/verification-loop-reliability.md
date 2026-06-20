@@ -77,6 +77,31 @@ the standing bar for any future validator change: a synthetic test proves
 the logic; a real captured incident proves it doesn't have a blind spot
 code review wouldn't catch.
 
+### VERIFY-4: Interactive Cline sessions get the same outcome-based verification dispatched jobs already have
+
+VERIFY-1 is implemented for `dispatch_coding_task` (`get_coding_task_status`
+checks real git state) but interactive Cline sessions (the VS Code
+extension) had no equivalent -- a human reads `attempt_completion`'s text
+directly, nothing automatically checks it. **Trigger:** real incident,
+2026-06-20 (odysseus) -- a session declared "Done... I fixed the two root
+causes" and committed, before ever running the launcher it had just
+written; it crashed immediately on the next command (wrong Python
+interpreter, no venv check). **Status: Implemented 2026-06-20**
+(`cline_completion_watcher.py`) -- polls Cline's task storage for new
+completion claims, determines touched repos via real git log timestamps
+(not the task's self-reported summary), runs each repo's test suite, and
+for any touched file shaped like a launcher/entrypoint, actually spawns it
+briefly and confirms it doesn't crash. This is the CRITIC pattern (verify
+via execution, not re-reading) applied externally, since Cline's own
+mechanisms can't provide it on Windows -- researched and ruled out before
+building: hooks have no completion-blocking event and are macOS/Linux only;
+"Double-Check Completion" is text-only self-critique (confirmed by reading
+its actual checklist text -- it never asks the model to re-run anything).
+**Not yet decided:** how this actually gets invoked on a schedule and
+surfaced (manual on-demand vs. a recurring check vs. a real Windows
+Scheduled Task) -- deliberately left open rather than built speculatively
+ahead of that decision.
+
 ## 4. AT tasks spawned
 
 None new -- this layer's existing practice already conforms to the
