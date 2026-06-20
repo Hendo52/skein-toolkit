@@ -412,6 +412,62 @@ def kill_job_process_tree(pid: int) -> bool:
     return result.returncode == 0 or not is_pid_alive(pid)
 
 
+
+def kill_orphaned_worktree_processes(worktree_path: str) -> "list[int]":
+    """AT-1249 / REQ-6 / TOOL-3: command-line-match cleanup for orphaned
+    processes whose wrapper parent has already exited.
+
+    Background (2026-06-20, AT-1196 dispatch saga): a PowerShell wrapper
+    script reporting 'Completed... exit 0' does not guarantee its child
+    cline.exe process actually exited -- twice in that session an orphaned
+    cline.exe survived its wrapper, holding a file lock on the job's
+    worktree. kill_job_process_tree's PID-tree kill cannot catch this case:
+    by the time a job transitions to terminal the intermediate parent (the
+    wrapper) has already exited and its children have been re-parented under
+    a new parent outside the original PID tree. A tree-rooted kill can no
+    longer reach them.
+
+    This function fixes the gap by searching ALL running processes for any
+    whose command-line arguments reference worktree_path (normalized to
+    lower-case, forward-slash form for cross-platform robustness), and
+    killing each one with SIGKILL (Windows: TerminateProcess via
+    psutil.Process.kill()). It skips the current process and any process
+    for which it cannot obtain a command line (AccessDenied, NoSuchProcess).
+
+    Returns a list of PIDs that were successfully killed (for the caller to
+    log). An empty list means no orphans were found -- the normal case.
+
+    Called by get_coding_task_status (local-mcp.py) immediately after a
+    job transitions to a terminal state (complete or failed)."""
+    if not worktree_path:
+        return []
+    # Normalize once; compare lower-case to lower-case to handle Windows
+    # case-insensitive paths and mixed forward/back-slash representations.
+    needle = worktree_path.replace("\\", "/").lower()
+    my_pid = os.getpid()
+    killed: list[int] = []
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            pid = proc.info["pid"]
+            if pid == my_pid:
+                continue
+            cmdline = proc.info.get("cmdline") or []
+            # cmdline is a list of argument strings; check each one.
+            if any(needle in arg.replace("\\", "/").lower() for arg in cmdline):
+                proc.kill()
+                killed.append(pid)
+                print(
+                    f"[dispatch_io] REQ-6: killed orphaned process PID={pid} "
+                    f"whose cmdline referenced worktree {worktree_path!r}",
+                    file=sys.stderr,
+                )
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            # Process gone between iteration and kill, or insufficient
+            # permissions -- either way it is not our job to kill, skip.
+            continue
+    return killed
+
+
 # ---------------------------------------------------------------------------
 # Promote / merge (AT-1230)
 # ---------------------------------------------------------------------------
