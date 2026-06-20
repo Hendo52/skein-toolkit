@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _MODULE_PATH = os.path.normpath(os.path.join(_THIS_DIR, "..", "cline_completion_watcher.py"))
@@ -208,6 +209,74 @@ class TestFindNewCommits(unittest.TestCase):
         finally:
             import shutil
             shutil.rmtree(not_a_repo)
+
+
+class TestLastScanOptimization(unittest.TestCase):
+    """Real performance finding (2026-06-20): a naive full scan of 28
+    accumulated task directories took ~3.5 minutes even with nothing new
+    to report, mostly from re-parsing every task's ui_messages.json (some
+    multi-MB) on every run. last_scan_ts must skip that parse for files
+    unchanged since the last scan -- confirmed here, not assumed."""
+
+    def setUp(self):
+        self.tasks_dir = tempfile.mkdtemp()
+        self.repos_dir = tempfile.mkdtemp()
+        self.state_path = os.path.join(tempfile.mkdtemp(), "state.json")
+
+    def tearDown(self):
+        import shutil
+        for d in (self.tasks_dir, self.repos_dir, os.path.dirname(self.state_path)):
+            shutil.rmtree(d, ignore_errors=True)
+
+    def _make_task(self, task_id, completed=True):
+        task_dir = os.path.join(self.tasks_dir, task_id)
+        os.makedirs(task_dir, exist_ok=True)
+        messages = [{"type": "say", "say": "text", "ts": 1000}]
+        if completed:
+            messages.append({"type": "ask", "ask": "completion_result", "ts": 2000, "text": ""})
+        with open(os.path.join(task_dir, "ui_messages.json"), "w", encoding="utf-8") as f:
+            json.dump(messages, f)
+        return task_dir
+
+    def test_unchanged_task_is_not_reparsed_on_second_scan(self):
+        self._make_task("old-task")
+        time.sleep(0.05)  # ensure a clear gap between file mtime and scan-start time
+        watcher.check_for_new_completions(repos={}, state_path=self.state_path, tasks_dir=self.tasks_dir)
+        time.sleep(0.05)
+        with unittest.mock.patch.object(watcher, "get_latest_completion_event") as mock_get:
+            watcher.check_for_new_completions(repos={}, state_path=self.state_path, tasks_dir=self.tasks_dir)
+            mock_get.assert_not_called()
+
+    def test_a_task_modified_after_the_last_scan_is_still_picked_up(self):
+        self._make_task("task-a", completed=False)
+        watcher.check_for_new_completions(repos={}, state_path=self.state_path, tasks_dir=self.tasks_dir)
+        time.sleep(0.05)
+        # Simulate the task completing later -- file genuinely modified
+        # after the previous scan's start time.
+        self._make_task("task-a", completed=True)
+        with unittest.mock.patch.object(watcher, "get_latest_completion_event", wraps=watcher.get_latest_completion_event) as mock_get:
+            watcher.check_for_new_completions(repos={}, state_path=self.state_path, tasks_dir=self.tasks_dir)
+            mock_get.assert_called()
+
+
+class TestJsonCliMode(unittest.TestCase):
+    """The Scheduled Task wrapper (PowerShell) parses this with
+    ConvertFrom-Json, not regex against human-readable text -- confirm the
+    --json flag actually produces valid, stably-shaped JSON on stdout."""
+
+    def test_json_flag_produces_valid_json_with_no_completions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = subprocess.run(
+                [sys.executable, _MODULE_PATH, "--json"],
+                capture_output=True, text=True, timeout=30,
+                # Points CLINE_TASKS_DIR (computed from %APPDATA% at import
+                # time) at an empty fake dir -- no real completions to find.
+                env={**os.environ, "APPDATA": tmpdir,
+                     "USERPROFILE": tmpdir},
+            )
+        self.assertEqual(result.returncode, 0)
+        parsed = json.loads(result.stdout)
+        self.assertEqual(parsed, [])
 
 
 if __name__ == "__main__":

@@ -267,13 +267,29 @@ def check_for_new_completions(
       "any_failures": bool,
     }
 
-    Does not modify the repos or attempt any fix -- read-only verification."""
+    Does not modify the repos or attempt any fix -- read-only verification.
+
+    Performance note (found running this for real, 2026-06-20): with 28
+    accumulated Cline task directories, a naive full scan took ~3.5
+    minutes even with nothing new to report -- most of that is JSON-
+    parsing every task's ui_messages.json (some multi-MB) on every single
+    run. last_scan_ts skips that parse entirely for any task whose
+    ui_messages.json mtime is older than the previous run -- it cannot
+    have a new completion if its file hasn't changed since we last looked."""
     state = load_watcher_state(state_path)
     processed = state.setdefault("processed", {})
+    last_scan_ts = state.get("last_scan_ts", 0)
+    this_scan_started_at = time.time()
     reports: "list[dict]" = []
 
     for task_dir in find_cline_task_dirs(tasks_dir):
         task_id = os.path.basename(task_dir)
+        ui_messages_path = os.path.join(task_dir, "ui_messages.json")
+        try:
+            if os.path.getmtime(ui_messages_path) < last_scan_ts:
+                continue  # unchanged since the last scan -- cannot have a new completion
+        except OSError:
+            continue  # file missing entirely; get_latest_completion_event would also skip it
         completion = get_latest_completion_event(task_dir)
         if completion is None:
             continue
@@ -321,6 +337,11 @@ def check_for_new_completions(
 
         processed[task_id] = completion_ts
 
+    # Use the scan's START time, not its end time, as the new cutoff -- a
+    # file modified mid-scan (between this_scan_started_at and now) must
+    # still have an mtime >= this_scan_started_at, guaranteeing the NEXT
+    # run picks it up rather than silently skipping it forever.
+    state["last_scan_ts"] = this_scan_started_at
     save_watcher_state(state, state_path)
     return reports
 
@@ -345,9 +366,33 @@ def format_report(report: dict) -> str:
 
 
 if __name__ == "__main__":
-    found = check_for_new_completions()
-    if not found:
-        print("No new Cline completions since last check.")
-    for r in found:
-        print(format_report(r))
-        print()
+    # --json: machine-readable mode for the Scheduled Task wrapper script --
+    # ConvertFrom-Json against a stable structure, not regex against
+    # human-readable text. Test-related fields (passed, detail) flattened
+    # since plain tuples don't round-trip through json.dumps as anything
+    # a caller could index cleanly.
+    if "--json" in sys.argv:
+        found = check_for_new_completions()
+        serializable = []
+        for r in found:
+            serializable.append({
+                "task_id": r["task_id"],
+                "completed_at": r["completed_at"],
+                "repos_touched": r["repos_touched"],
+                "test_results": {
+                    name: (None if res is None else {"passed": res[0], "detail": res[1]})
+                    for name, res in r["test_results"].items()
+                },
+                "smoke_test_results": [
+                    {"passed": passed, "detail": detail} for passed, detail in r["smoke_test_results"]
+                ],
+                "any_failures": r["any_failures"],
+            })
+        print(json.dumps(serializable))
+    else:
+        found = check_for_new_completions()
+        if not found:
+            print("No new Cline completions since last check.")
+        for r in found:
+            print(format_report(r))
+            print()
