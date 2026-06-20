@@ -68,6 +68,66 @@ escalated when ambiguous, across any consuming project.
 
 **Owning directory:** `foundation/SR-1.12-autonomous-coordination/`
 
+#### SR-1.13 — Tool orchestration (skein-toolkit)
+
+skein-toolkit shall maintain how dispatched agents' tool calls are
+validated, executed, and have results injected back -- process lifecycle
+of the executing agent itself (spawn, monitor, verify termination),
+prompt construction for dispatched tasks, and worktree/branch isolation
+mechanics. Distinct from SR-1.4's model-tier governance (which model runs)
+and SR-1.5's agent-contract patterns (role/delegation semantics) -- this SR
+owns whether a tool call the model issues actually gets executed and
+cleaned up correctly, regardless of which model issued it.
+
+**Owning directory:** `foundation/SR-1.13-tool-orchestration/`
+
+#### SR-1.14 — Verification loops (skein-toolkit)
+
+skein-toolkit shall maintain how a dispatched task's success or failure is
+actually determined -- diff-based and non-diff-based completion
+validation, distinguishing a genuine no-op from a missed step, and the
+supervisor's failure-triage pattern-matching (`supervisor_triage.py`).
+Distinct from SR-1.12's coordination protocol (how/when escalation
+happens) -- this SR owns whether the verification verdict feeding that
+protocol is actually correct.
+
+**Owning directory:** `foundation/SR-1.14-verification-loops/`
+
+#### SR-1.15 — Context and memory management (skein-toolkit)
+
+skein-toolkit shall maintain the actual runtime context-window
+configuration for every model a dispatched agent can use (matching
+configured capability against claimed/advertised capability), and
+cross-step/cross-turn context carry-forward for multi-step orchestrated
+work. Distinct from SR-1.4's tier-selection policy (which task class needs
+which model) -- this SR owns whether the chosen model is actually given
+the context budget its own architecture supports, once selected.
+
+**Owning directory:** `foundation/SR-1.15-context-memory/`
+
+#### SR-1.16 — Guardrails (skein-toolkit)
+
+skein-toolkit shall maintain resilience guardrails for agent dispatch:
+retry/backoff policy for transient upstream failures, health/probe timeout
+calibration, and (planned) circuit-breaker state for repeatedly-failing
+candidates. Distinct from `autonomous-dispatch-risk-framework.md`'s
+action-level risk gating (SR-1.4 -- force-push, branch deletion, cloud
+spend approval) -- that framework governs which *actions* need human
+approval; this SR governs whether a *retry/backoff/timeout* decision is
+made correctly once an action is already approved to proceed.
+
+**Owning directory:** `foundation/SR-1.16-guardrails/`
+
+#### SR-1.17 — Harness observability (skein-toolkit)
+
+skein-toolkit shall maintain structured logging, health-check/staleness
+detection (`toolchain-doctor.ps1`'s pattern), and audit-trail conventions
+for dispatched agent work -- whether a real human or supervisor agent can
+tell what a dispatched job actually did, and whether the toolchain itself
+is healthy, without reading raw subprocess output by hand.
+
+**Owning directory:** `foundation/SR-1.17-harness-observability/`
+
 ---
 
 ## Relationship to Electron-Splines's design-goals.md
