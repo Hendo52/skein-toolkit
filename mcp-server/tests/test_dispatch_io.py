@@ -282,6 +282,34 @@ class TestFindBusyJobForRepo(unittest.TestCase):
         })
         self.assertEqual(dispatch_io.find_busy_job_for_repo(self.tmpdir, "c:/repo/path"), "job1")
 
+    def test_different_at_id_in_same_repo_does_not_block_when_at_id_given(self):
+        """Relaxed 2026-06-20 (architect-requested parallel-dispatch
+        experiment): two different AT-ids may run concurrently against the
+        same repo -- verified safe (concurrent git worktree add, git fsck
+        clean) and each AT-id gets its own worktree path/branch name, so
+        there's no real collision risk between them."""
+        dispatch_io.write_job_state(self.tmpdir, "job-1196", {
+            "status": "running", "repo_root": "C:/repo", "pid": os.getpid(), "at_id": 1196,
+        })
+        self.assertIsNone(dispatch_io.find_busy_job_for_repo(self.tmpdir, "C:/repo", at_id=1197))
+
+    def test_same_at_id_in_same_repo_still_blocks(self):
+        """The one real collision risk -- dispatching the SAME AT-id twice
+        concurrently would collide on both worktree path and branch name --
+        stays blocked."""
+        dispatch_io.write_job_state(self.tmpdir, "job-1196", {
+            "status": "running", "repo_root": "C:/repo", "pid": os.getpid(), "at_id": 1196,
+        })
+        self.assertEqual(dispatch_io.find_busy_job_for_repo(self.tmpdir, "C:/repo", at_id=1196), "job-1196")
+
+    def test_at_id_none_preserves_original_whole_repo_serialization(self):
+        """Callers not yet updated to pass at_id keep the original OQ-285
+        whole-repo-busy behavior -- no silent behavior change for them."""
+        dispatch_io.write_job_state(self.tmpdir, "job-1196", {
+            "status": "running", "repo_root": "C:/repo", "pid": os.getpid(), "at_id": 1196,
+        })
+        self.assertEqual(dispatch_io.find_busy_job_for_repo(self.tmpdir, "C:/repo"), "job-1196")
+
 
 class TestNewJobId(unittest.TestCase):
     def test_includes_at_id_and_is_unique(self):

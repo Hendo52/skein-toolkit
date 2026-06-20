@@ -163,11 +163,18 @@ internally from the AT row's own `Model:` annotation.)
   require an explicit `repo_root` parameter (**OQ-288 resolved, Option A** --
   required argument as a stopgap until AT-1223's multi-repo AT awareness
   lands).
-- **Serializes to one job at a time per repo (OQ-285 resolved, Option A).** A
-  second `dispatch_coding_task` call against a repo with an already-running
-  job is rejected (or queued -- implementation's choice, but must not run
-  concurrently) rather than spawning a second Cline process against the same
-  working tree.
+- **Serializes to one job at a time per (repo, AT-id) pair** (OQ-285
+  resolved, Option A on 2026-06-18; relaxed from whole-repo to
+  per-AT-id 2026-06-20, architect-requested parallel-dispatch experiment --
+  see `agent-harness-reliability-standard.md`). A second
+  `dispatch_coding_task` call for the SAME AT-id against a repo with an
+  already-running job for that AT-id is rejected -- that case still
+  collides on both worktree path and branch name. Two *different* AT-ids
+  may now run concurrently against the same repo: each gets its own
+  worktree path and branch name (derived from at_id), and concurrent `git
+  worktree add` against the same repo was verified safe directly (two
+  simultaneous calls, `git fsck --full` clean afterward -- git's own
+  internal locking serializes the metadata write, it does not race-corrupt).
 - Spawns the **Cline CLI** (not the VS Code extension -- see §3.3) using the
   same invocation shape as `run-cline.ps1`, as a detached background process,
   and returns immediately with a job id. Must not block the calling chat turn
@@ -265,7 +272,11 @@ Both answered by the architect; see §3.1/§3.2a for the resulting design and
 §7 for the full resolution record:
 
 - **OQ-285:** `dispatch_coding_task` serializes to one job at a time per repo
-  (Option A).
+  (Option A). **Relaxed 2026-06-20** to one job at a time per (repo, AT-id)
+  pair instead -- see §3.1's updated text; the original whole-repo
+  serialization is still available (pass no `at_id` to
+  `find_busy_job_for_repo`) but is no longer what `dispatch_coding_task`
+  itself uses.
 - **OQ-286:** commits land on a dedicated branch, promoted to the default
   branch only via the new `promote_coding_task` tool (Option B -- this
   deviates from the preemptive answer below; kept for the record). Decided

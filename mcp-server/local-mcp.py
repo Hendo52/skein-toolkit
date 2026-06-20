@@ -2769,12 +2769,14 @@ async def dispatch_coding_task(at_id: int, repo_root: str) -> str:
             f"without one (no guessed default; see ai-model-selection-policy.md S11.2)"
         )
 
-    busy_job_id = dispatch_io.find_busy_job_for_repo(CODING_TASK_STATE_DIR, repo_root)
+    busy_job_id = dispatch_io.find_busy_job_for_repo(CODING_TASK_STATE_DIR, repo_root, at_id=at_id)
     if busy_job_id is not None:
         return (
-            f"ERROR: {repo_root} already has a running job ({busy_job_id}) -- OQ-285: one job "
-            f"at a time per repo. Check get_coding_task_status('{busy_job_id}') or wait for it "
-            f"to finish."
+            f"ERROR: AT-{at_id} already has a running job ({busy_job_id}) in {repo_root} -- "
+            f"one job at a time per (repo, AT-id) pair (relaxed from OQ-285's original "
+            f"whole-repo serialization, 2026-06-20 -- see agent-harness-reliability-standard.md). "
+            f"Check get_coding_task_status('{busy_job_id}') or wait for it to finish. Different "
+            f"AT-ids may run concurrently against the same repo."
         )
 
     clean, dirty_detail = dispatch_io.is_working_tree_clean(repo_root)

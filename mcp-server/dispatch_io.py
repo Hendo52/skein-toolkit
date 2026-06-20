@@ -236,10 +236,24 @@ def is_pid_alive(pid: "int | None") -> bool:
 def find_busy_job_for_repo(
     state_dir: str,
     repo_root: str,
+    at_id: "int | None" = None,
     staleness_threshold_seconds: int = DEFAULT_STALENESS_THRESHOLD_SECONDS,
 ) -> "str | None":
-    """OQ-285: one job at a time per repo. Returns the job_id of a job that
-    counts as still occupying repo_root, or None if the repo is free.
+    """OQ-285 (2026-06-18) originally serialized to one job at a time per
+    repo. Relaxed 2026-06-20 (agent-harness-reliability-standard.md tier
+    review, architect-requested parallel-dispatch experiment) to one job at
+    a time per (repo, AT-id) pair instead: verified directly that concurrent
+    `git worktree add` against the same repo is safe (two simultaneous
+    calls, `git fsck --full` clean afterward -- git's own internal locking
+    serializes the metadata write, it does not race-corrupt), and every
+    job's worktree path and branch name are already derived from at_id
+    (dispatch_branch_name), so two different AT-ids can never collide on a
+    path or branch even running at the same instant. The real, still-
+    enforced collision risk is dispatching the SAME AT-id twice
+    concurrently -- that WOULD collide on both the worktree path and the
+    branch name -- so at_id is now part of the busy-check key. Passing
+    at_id=None preserves the original whole-repo serialization (used by any
+    caller not yet updated to pass it).
 
     A job counts as busy if its status is "running" AND EITHER its recorded
     PID is still alive OR (PID check inconclusive -- missing/dead PID but
@@ -254,6 +268,8 @@ def find_busy_job_for_repo(
         if state.get("status") != "running":
             continue
         if os.path.normcase(os.path.normpath(state.get("repo_root", ""))) != os.path.normcase(os.path.normpath(repo_root)):
+            continue
+        if at_id is not None and state.get("at_id") != at_id:
             continue
         pid = state.get("pid")
         if pid is not None:
