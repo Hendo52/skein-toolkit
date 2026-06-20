@@ -46,10 +46,18 @@ WORKSPACE = os.environ.get(
     "WORKSPACE_ROOT", os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 )
 
+# MCP_PORT override, 2026-06-20: tray.py (odysseus) runs one local-mcp.py
+# instance per workspace so Odysseus's chat has real repo access across
+# all 3 sibling repos, not just whichever one WORKSPACE_ROOT happened to
+# point at. Each instance needs its own port -- defaults to 3100
+# (unchanged) when not overridden, so every existing caller (toolchain-
+# doctor.ps1, dispatch_coding_task, etc.) keeps working exactly as before.
+MCP_PORT = int(os.environ.get("MCP_PORT", "3100"))
+
 mcp = FastMCP(
     "local-devtools",
     host="127.0.0.1",
-    port=3100,
+    port=MCP_PORT,
     # Allow both 127.0.0.1 and localhost -- Continue.dev connects with Host: localhost
     transport_security=TransportSecuritySettings(
         allowed_hosts=["127.0.0.1:*", "localhost:*"],
@@ -4385,9 +4393,9 @@ if __name__ == "__main__":
     print(f"Local MCP server starting...")
     print(f"  running from commit {_SERVER_STARTUP_COMMIT_SHA} ({_SERVER_REPO_ROOT})")
     print(f"Workspace: {WORKSPACE}")
-    print(f"Listening on http://127.0.0.1:3100/sse  (MCP tools)")
-    print(f"CF proxy at   http://127.0.0.1:3100/cfproxy/{{account_id}}/v1")
-    print(f"Health/staleness check at http://127.0.0.1:3100/health")
+    print(f"Listening on http://127.0.0.1:{MCP_PORT}/sse  (MCP tools)")
+    print(f"CF proxy at   http://127.0.0.1:{MCP_PORT}/cfproxy/{{account_id}}/v1")
+    print(f"Health/staleness check at http://127.0.0.1:{MCP_PORT}/health")
     print(f"Add to Continue.dev: run  .\\scripts\\set-continue-config.ps1 -McpLocal")
 
     # Combine FastMCP SSE app with CF proxy routes on a single uvicorn server
@@ -4397,4 +4405,4 @@ if __name__ == "__main__":
         Route("/health", _health, methods=["GET"]),
         Mount("/", app=mcp_app),
     ])
-    uvicorn.run(combined, host="127.0.0.1", port=3100, log_level="info")
+    uvicorn.run(combined, host="127.0.0.1", port=MCP_PORT, log_level="info")
