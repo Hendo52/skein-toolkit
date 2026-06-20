@@ -35,6 +35,28 @@ cheap model's *effective* tier ("SQEP enablement"). §7 of this policy's Level 2
 (Cloud-API) is the subject of AT-1157's planned experiment in that spec — this policy is not
 changed by that spec until AT-1157 produces evidence.
 
+**Amendment, 2026-06-20 (architect directive): Claude is reserved for the architect's own
+direct use, never automatic background dispatch.** Every "Cloud-API (Claude Sonnet)" reference
+below describes Claude used in a live, architect-present session (e.g. a Claude Code
+conversation) or an explicit, one-off architect-approved escalation for a specific task --
+**not** `dispatch_coding_task`'s automatic model resolution. `dispatch_io.py`'s
+`TIER_MODEL_CANDIDATES` never includes any `claude/*` model for Tier-C or Tier-M as of this
+date, regardless of what this document's decision rules (§7) say about Cloud-API being the
+default Level 2/3 escalation -- those rules still describe the *architect's own* escalation
+path, they no longer describe what an unattended dispatch will try on its own. Concrete cost
+evidence the same day: 3 concurrent Tier-C dispatch jobs all defaulting to claude/sonnet-4 hit
+Anthropic credit exhaustion mid-session running in parallel, while concurrent Tier-R jobs on
+cf/kimi-k2.6 ran fine. See `agent-harness-reliability-standard.md` for the full incident.
+
+**The one real tension this creates (§5's empirical floor, not resolved by fiat):** local
+models are documented below to "produce frequent incorrect derivations" on this project's
+hardest novel mathematics (G0 joint geometry, PH quintic interpolation), with Cloud-API/Claude
+as the established quality floor for exactly that case. The architect's explicit call: no
+automatic fallback to Claude even there. If every Tier-M dispatch candidate fails on a genuine
+novel-math task, `dispatch_coding_task` surfaces that for the architect to decide -- bringing
+Claude in becomes a conversation, not a silent background substitution. This is a real,
+accepted cost of the policy change, not a claim that local models now meet the old floor.
+
 ---
 
 ## 1. Design-Goal Linkage

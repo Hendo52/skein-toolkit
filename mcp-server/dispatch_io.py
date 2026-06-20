@@ -75,10 +75,34 @@ import psutil
 # simply never wired in. Placed ahead of the qwen2.5-coder variants as the
 # preferred local-only fallback; cf/kimi-k2.6 still tried first since it's
 # the only candidate with confirmed-reliable real-world agentic runs today.
+#
+# claude/sonnet-4 removed from Tier-C and Tier-M entirely, 2026-06-20
+# (architect directive: "Claude's should be reserved for the architect to
+# use, not for agents or subagents"). Concrete cost evidence the same day:
+# the AT-1246/1248/1249 parallel-dispatch batch ran 3 concurrent Tier-C
+# jobs, all defaulting to claude/sonnet-4 -- all 3 hit Anthropic credit
+# exhaustion mid-session, while the 2 Tier-R jobs on cf/kimi-k2.6 ran fine
+# concurrently. kimi-k2.6 is now Tier-C's first candidate (already proven
+# reliable for agentic dispatch all session).
+#
+# Tier-M is the one real tension in this change: ai-model-selection-
+# policy.md S5 documents an empirical finding that local models (phi4-
+# reasoning, deepseek-r1:32b) "produce frequent incorrect derivations" on
+# this project's hardest novel mathematics (G0 joint geometry, PH quintic
+# interpolation) -- Claude was the established quality floor for exactly
+# that narrow case. Architect's explicit call: no automatic fallback to
+# Claude even there -- if every Tier-M candidate fails, resolve_model_for_tier
+# returns None and the caller raises the failure for the architect to
+# decide (bring Claude in directly via conversation, not an automatic
+# background dispatch) rather than silently escalating. cf/kimi-k2.6 is
+# listed first for Tier-M as a reasonable try -- it has no track record on
+# this project's specific novel-math domain (unlike its proven agentic-
+# coding reliability), so this is genuinely untested, not a known-good
+# substitute for Claude's documented floor.
 TIER_MODEL_CANDIDATES: dict[str, tuple[str, ...]] = {
     "Tier-R": ("cf/kimi-k2.6", "local/qwen3.6", "local/qwen2.5-coder:32b", "local/qwen2.5-coder:7b"),
-    "Tier-C": ("claude/sonnet-4", "cf/kimi-k2.6", "local/deepseek-r1:32b"),
-    "Tier-M": ("claude/sonnet-4", "local/deepseek-r1:32b", "local/llama3.3:70b"),
+    "Tier-C": ("cf/kimi-k2.6", "local/qwen3.6", "local/deepseek-r1:32b"),
+    "Tier-M": ("cf/kimi-k2.6", "local/deepseek-r1:32b", "local/llama3.3:70b"),
 }
 
 DEFAULT_LITELLM_BASE_URL = "http://127.0.0.1:4000"

@@ -79,6 +79,28 @@ a much smaller thundering-herd risk than the literature's typical
 high-concurrency-service context this recommendation comes from. Worth
 revisiting if parallel dispatch volume grows meaningfully.
 
+### GUARD-5: Claude is reserved for the architect's own direct use, never an automatic dispatch candidate
+
+**Trigger:** Architect directive (2026-06-20): "Claude's should be reserved
+for the architect to use, not for agents or subagents." Concrete cost
+evidence the same day: the AT-1246/1248/1249 parallel-dispatch batch ran 3
+concurrent Tier-C jobs that all defaulted to `claude/sonnet-4` -- all 3 hit
+Anthropic credit exhaustion mid-session, while concurrent Tier-R jobs on
+`cf/kimi-k2.6` ran fine in parallel. Parallel dispatch multiplies concurrent
+spend rate faster than it multiplies throughput when every job defaults to
+the same paid API.
+**Acceptance:** No tier's `TIER_MODEL_CANDIDATES` entry includes any
+`claude/*` model. **Status: Implemented 2026-06-20** -- removed from
+Tier-C and Tier-M; `cf/kimi-k2.6` promoted to first candidate in both.
+**Known tradeoff, not resolved by this fix:** Tier-M's documented empirical
+floor (ai-model-selection-policy.md S5 -- local models "produce frequent
+incorrect derivations" on this project's hardest novel mathematics) named
+Claude as the quality floor for exactly that case. No automatic fallback
+to Claude was added for Tier-M either, per explicit architect direction --
+a failed Tier-M dispatch now surfaces for the architect to decide, rather
+than silently substituting a known-good model in the background. See
+`local-mcp.py`'s Tier-M-specific error message.
+
 ## 4. AT tasks spawned
 
 - GUARD-3 and GUARD-4: not spawned as ATs yet -- per this project's own

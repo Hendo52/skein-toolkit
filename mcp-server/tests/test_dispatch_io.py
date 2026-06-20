@@ -189,6 +189,22 @@ class TestResolveModelForTier(unittest.IsolatedAsyncioTestCase):
         candidates = dispatch_io.TIER_MODEL_CANDIDATES["Tier-R"]
         self.assertNotEqual(candidates[0], "local/qwen2.5-coder:7b")
 
+    def test_claude_is_not_an_auto_dispatch_candidate_for_any_tier(self):
+        # Architect directive (2026-06-20): "Claude's should be reserved for
+        # the architect to use, not for agents or subagents." Concrete cost
+        # evidence the same day: 3 concurrent Tier-C jobs all defaulting to
+        # claude/sonnet-4 hit Anthropic credit exhaustion mid-session during
+        # the AT-1246/1248/1249 parallel-dispatch batch. No tier's candidate
+        # list may include any claude/* model -- bringing Claude in for a
+        # hard task is now a conversation with the architect, not an
+        # automatic background dispatch (see Tier-M's error message in
+        # local-mcp.py for the one real tension this creates).
+        for tier, candidates in dispatch_io.TIER_MODEL_CANDIDATES.items():
+            self.assertTrue(
+                all(not m.startswith("claude/") for m in candidates),
+                f"{tier} lists a claude/* candidate: {candidates}",
+            )
+
 
 class TestJobState(unittest.TestCase):
     def setUp(self):

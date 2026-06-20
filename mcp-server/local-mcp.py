@@ -2870,6 +2870,16 @@ async def dispatch_coding_task(at_id: int, repo_root: str) -> str:
     master_key = dispatch_io.load_litellm_master_key(os.path.dirname(os.path.abspath(__file__)))
     model, attempted = await dispatch_io.resolve_model_for_tier(at_row["model_tier"], master_key)
     if model is None:
+        if at_row["model_tier"] == "Tier-M":
+            return (
+                f"ERROR: no model responded for Tier-M (AT-{at_id}) -- attempted {attempted}. "
+                f"Claude is not auto-tried for Tier-M (architect directive, 2026-06-20: reserved "
+                f"for the architect's own direct use, not background dispatch) even though it was "
+                f"the documented quality floor for this project's hardest novel mathematics "
+                f"(ai-model-selection-policy.md S5). If toolchain-doctor.ps1 shows everything "
+                f"healthy and this is a genuine novel-math task, bring it to the architect "
+                f"directly rather than retrying local candidates again."
+            )
         return f"ERROR: no model responded for {at_row['model_tier']} -- attempted {attempted}. Check toolchain-doctor.ps1."
 
     job_id = dispatch_io.new_job_id(at_id)
