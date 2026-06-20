@@ -50,7 +50,7 @@ benefits from. **Status: Implemented 2026-06-20** (`local/qwen3.6` found
 pulled and described as "best local general model... tools" but never
 wired; added to Tier-R).
 
-### CTX-3 (= master spec REQ-9): Local-model keep-alive duration should be tuned to reduce cold-start frequency at the source (Planned)
+### CTX-3 (= master spec REQ-9): Local-model keep-alive duration should be tuned to reduce cold-start frequency at the source
 
 External research independently confirms two things found this session:
 the health-check timeout must exceed cold-load time (already fixed, see
@@ -58,9 +58,12 @@ SR-1.16's GUARD-2), and separately, Ollama's default 5-minute keep_alive is
 "too short if cold starts are scattered throughout the day" -- a 1-2 hour
 keep_alive "would eliminate most of them" for a sporadic-use pattern like
 this project's (production Ollama deployment guidance, 2026). **Status:
-Not implemented** -- requires an explicit resource-tradeoff decision
-(VRAM/RAM residency vs. cold-start frequency), tracked as AT-1250 rather
-than defaulted unilaterally.
+Implemented 2026-06-20** (AT-1250): all 8 local Ollama entries now set
+`keep_alive: "2h"` via `extra_body`, with the tradeoff documented inline in
+`litellm_config.yaml` -- the upper end of the recommended 1-2 h range, chosen
+to keep models warm across typical dispatch session gaps without the
+permanent RAM residency that `OLLAMA_KEEP_ALIVE=-1` would impose on this
+machine's limited 8 GB VRAM / 64 GB RAM partial-offload hardware.
 
 ### CTX-4: Cross-step context carry-forward for multi-step orchestrated work must not silently narrow
 
@@ -73,8 +76,8 @@ formal definition.
 
 ## 4. AT tasks spawned
 
-- AT-1250 (CTX-3 implementation: keep_alive tuning, pending an explicit
-  resource-tradeoff decision)
+- AT-1250 (CTX-3 implementation: keep_alive tuning, 2 h via extra_body in
+  litellm_config.yaml, implemented 2026-06-20)
 
 ## 5. Relationship to other SRs
 

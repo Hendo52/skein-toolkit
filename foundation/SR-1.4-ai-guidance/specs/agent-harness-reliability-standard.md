@@ -246,19 +246,19 @@ should be a candidate -- a pulled, configured, documented model is not
 allowed to sit unwired indefinitely. **Status: Implemented 2026-06-20**
 (`local/qwen3.6` found pulled and described but never wired; added).
 
-### REQ-9: Local-model keep-alive duration should be tuned to reduce cold-start frequency, not just tolerated via longer timeouts (Planned, not yet implemented)
+### REQ-9: Local-model keep-alive duration should be tuned to reduce cold-start frequency, not just tolerated via longer timeouts
 
 **Trigger:** N/A yet -- this is a recommendation from external research
 (§3), not yet triggered by a specific incident beyond AT-1197's timeout fix
 treating the symptom.
-**Acceptance (proposed):** Local models used for agentic dispatch have an
+**Acceptance:** Local models used for agentic dispatch have an
 Ollama `keep_alive` set well above the 5-minute default (community
 guidance suggests 1-2 hours for sporadic-use patterns like this project's),
 reducing how often a cold-load (and its associated 90-second probe risk)
-happens at all. **Status: Not implemented.** Tracked as a follow-up AT --
-deliberately not done in this spec, since it trades VRAM/RAM residency
-against cold-start frequency and is a real resource-tradeoff decision, not
-a pure bug fix.
+happens at all. **Status: Implemented 2026-06-20** (AT-1250): all 8 local
+Ollama entries in `litellm_config.yaml` now set `keep_alive: "2h"` via
+`extra_body`, with the tradeoff documented inline.
+
 
 ### REQ-10: A circuit-breaker state for repeatedly-failing candidates (Planned, not yet implemented)
 
@@ -295,8 +295,11 @@ causing real harm, only theoretical wasted probe time.
 - **REQ-6 implementation:** command-line-match process cleanup for
   terminal-state jobs, replacing/supplementing PID-tree kill.
 - **REQ-9 implementation:** tune Ollama `keep_alive` for the local Tier-R/
-  Tier-M candidates; requires an explicit resource-tradeoff decision
-  (VRAM/RAM residency vs. cold-start frequency), not a unilateral default.
+  Tier-M candidates. **Done 2026-06-20** (AT-1250): `keep_alive: "2h"` set
+  on all 8 local Ollama entries via `extra_body` in `litellm_config.yaml`,
+  with the resource tradeoff (VRAM/RAM residency vs. cold-start frequency)
+  documented inline — the upper end of the 1-2 h guidance range, avoiding
+  the permanent residency that `OLLAMA_KEEP_ALIVE=-1` would impose.
 - **REQ-10 implementation:** circuit-breaker state for `resolve_model_for_tier`,
   only if a real incident demonstrates the current behavior causing harm
   (per this spec's own evidence-based-requirement bar) -- not pre-built

@@ -25,12 +25,27 @@ model_list:
   # larger reasoning models, balancing reliability against this machine's
   # 8GB-VRAM/64GB-RAM partial-offload constraint (ai-model-selection-
   # policy.md S4.2).
+  #
+  # keep_alive fix, 2026-06-20 (AT-1250): Ollama's default 5-minute keep_alive
+  # is too short for this project's sporadic-use pattern (dispatches arrive in
+  # bursts with long idle gaps). A cold reload of a 12-23 GB model on this
+  # machine's partial-offload hardware (RTX 3070, 8 GB VRAM / 64 GB RAM)
+  # takes ~90 s, directly observed as the root cause of AT-1197's timeout
+  # cascade. External production-Ollama guidance (2026) suggests 1-2 hours
+  # "would eliminate most of them" for this usage pattern. The value chosen
+  # below is the upper end of that range (2 h) as a deliberate resource
+  # tradeoff: it keeps models warm across typical dispatch session gaps
+  # without the permanent RAM residency that OLLAMA_KEEP_ALIVE=-1 would
+  # impose on limited local hardware. Each entry passes keep_alive via
+  # LiteLLM's extra_body mechanism so it reaches Ollama's native API.
 
   - model_name: local/qwen2.5-coder:7b
     litellm_params:
       model: ollama/qwen2.5-coder:7b
       api_base: http://localhost:11434
       num_ctx: 32768
+      extra_body:
+        keep_alive: "2h"
     model_info:
       description: "Fast local coder, tool-use, 32k context. Best for quick edits."
 
@@ -39,6 +54,8 @@ model_list:
       model: ollama/qwen2.5-coder:32b
       api_base: http://localhost:11434
       num_ctx: 32768
+      extra_body:
+        keep_alive: "2h"
     model_info:
       description: "Powerful local coder, tool-use, 32k context."
 
@@ -47,6 +64,8 @@ model_list:
       model: ollama/qwen3.6:latest
       api_base: http://localhost:11434
       num_ctx: 65536
+      extra_body:
+        keep_alive: "2h"
     model_info:
       description: "36B MoE, 262k context, vision + tools + thinking. Best local general model."
 
@@ -55,6 +74,8 @@ model_list:
       model: ollama/qwq:32b
       api_base: http://localhost:11434
       num_ctx: 40960
+      extra_body:
+        keep_alive: "2h"
     model_info:
       description: "QwQ reasoning model, 32B, tool-use, 40k context."
 
@@ -63,6 +84,8 @@ model_list:
       model: ollama/deepseek-r1:14b
       api_base: http://localhost:11434
       num_ctx: 65536
+      extra_body:
+        keep_alive: "2h"
     model_info:
       description: "Compact DeepSeek reasoning, 131k context."
 
@@ -71,6 +94,8 @@ model_list:
       model: ollama/deepseek-r1:32b
       api_base: http://localhost:11434
       num_ctx: 65536
+      extra_body:
+        keep_alive: "2h"
     model_info:
       description: "DeepSeek R1 reasoning, 32B, 131k context."
 
@@ -79,6 +104,8 @@ model_list:
       model: ollama/deepseek-r1:70b
       api_base: http://localhost:11434
       num_ctx: 65536
+      extra_body:
+        keep_alive: "2h"
     model_info:
       description: "Best local reasoning model, 70B, 131k context."
 
@@ -87,6 +114,8 @@ model_list:
       model: ollama/llama3.3:70b
       api_base: http://localhost:11434
       num_ctx: 65536
+      extra_body:
+        keep_alive: "2h"
     model_info:
       description: "Llama 3.3 70B, tool-use, 131k context. Strong general model."
 
