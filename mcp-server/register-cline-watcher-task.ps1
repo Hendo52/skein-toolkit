@@ -44,8 +44,14 @@ $action = New-ScheduledTaskAction `
     -Execute "pwsh.exe" `
     -Argument "-NoProfile -NonInteractive -File `"$ScriptPath`""
 
-# Every hour, starting now
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration ([timeSpan]::maxvalue)
+# Every hour, starting now, indefinitely. [timeSpan]::maxvalue (10,675,199
+# days plus a fractional remainder of hours/minutes/seconds) serializes to
+# an invalid duration XML for Task Scheduler's own schema -- confirmed live:
+# Register-ScheduledTask failed with "task XML contains a value which is
+# incorrectly formatted or out of range (10,42):Duration:P99999999DT23H59M59S".
+# A round day count with no fractional remainder (the standard community
+# workaround for "repeat forever") is what Task Scheduler's schema accepts.
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 9999)
 
 # Interactive logon (not S4U/Password) -- required for BurntToast's
 # notifications to actually reach the visible desktop session, confirmed
