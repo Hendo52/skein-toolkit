@@ -137,6 +137,26 @@ class TestCfProxyCapacityRetry(unittest.IsolatedAsyncioTestCase):
         body = json.loads(response.body)
         self.assertIn("429", body["error"]["message"])
 
+    async def test_500_then_success_retries_and_returns_the_success(self):
+        """Real incident (AT-1196, 2026-06-20): a CF 'Internal server error'
+        (status 500, code 8004) hit mid-dispatch and lost a long, otherwise-
+        successful run -- this status code wasn't retried at all before this
+        fix (only 429 was). Mirrors the 429 retry test exactly."""
+        _ScriptedAsyncClient.responses = [
+            _FakeResponse(500, {"errors": [{"message": "AiError: AiError: Internal server error", "code": 8004}]}),
+            _FakeResponse(200, {"choices": [{"message": {"role": "assistant", "content": "ok, done"}}]}),
+        ]
+        with patch.object(local_mcp.httpx, "AsyncClient", _ScriptedAsyncClient), \
+                patch.object(local_mcp.asyncio, "sleep") as mock_sleep, \
+                patch("sys.stderr"):
+            response = await local_mcp._cf_proxy(_make_request(_PASSTHROUGH_BODY))
+
+        self.assertEqual(len(_ScriptedAsyncClient.calls), 2, "expected exactly one retry after the 500")
+        mock_sleep.assert_awaited()
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.body)
+        self.assertEqual(body["choices"][0]["message"]["content"], "ok, done")
+
     async def test_401_does_not_retry_and_fails_immediately(self):
         """Non-transient auth failures must still fail on the first attempt --
         the 429 carve-out must not accidentally swallow genuine permission

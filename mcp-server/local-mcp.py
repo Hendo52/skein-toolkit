@@ -1121,6 +1121,18 @@ CF_DEGENERATE_RETRY_TEMPERATURES = (0.7, 1.0)
 CF_CAPACITY_RETRY_LIMIT = 5
 CF_CAPACITY_RETRY_BACKOFF_SECONDS = (2.0, 4.0, 8.0, 15.0, 25.0)
 
+# Real incident, 2026-06-20 (AT-1196): a long, otherwise-successful
+# kimi-k2.6 dispatch (genuine edits made throughout) lost all its work when
+# CF returned a 500 "Internal server error" (code 8004) on what was likely
+# the final tool-result round trip -- the diff was never persisted to disk.
+# This status code wasn't retried at all (the carve-out below only checked
+# == 429), so it fell straight through to the "genuinely permanent failure"
+# path alongside actual auth/permission errors, exactly the failure mode
+# CB-23's comment above already describes for 429. A 500 from CF's own
+# infrastructure is the same kind of transient server-side hiccup, not a
+# problem with the request -- it belongs in the same retry carve-out.
+CF_TRANSIENT_RETRY_STATUS_CODES = (429, 500)
+
 # Timeout for CF forward calls, both non-streaming and streaming. The previous
 # 60s value was tuned around gpt-oss's fast (often degenerate-empty, sub-10s)
 # responses and is far too short for kimi-k2.6's realistic completions: a
@@ -3866,12 +3878,12 @@ async def _cf_proxy(request: StarletteRequest):
                     status_code=resp.status_code if resp.status_code >= 400 else 502,
                 )
 
-            if resp.status_code == 429 and _non_stream_attempt < _non_stream_max_attempts:
+            if resp.status_code in CF_TRANSIENT_RETRY_STATUS_CODES and _non_stream_attempt < _non_stream_max_attempts:
                 backoff = CF_CAPACITY_RETRY_BACKOFF_SECONDS[
                     min(_non_stream_attempt - 1, len(CF_CAPACITY_RETRY_BACKOFF_SECONDS) - 1)
                 ]
                 print(
-                    f"[cfproxy] CF capacity error (429) from {body.get('model')!r} "
+                    f"[cfproxy] CF transient error ({resp.status_code}) from {body.get('model')!r} "
                     f"(non-streaming attempt {_non_stream_attempt}/{_non_stream_max_attempts}) -- "
                     f"retrying after {backoff}s: {resp.text[:200]!r}",
                     file=sys.stderr,
@@ -4019,12 +4031,12 @@ async def _cf_proxy(request: StarletteRequest):
                         # existing attempt budget instead of giving up. Checked
                         # before _diagnose_upstream_error/auth handling below,
                         # which is only correct for genuinely permanent failures.
-                        if resp.status_code == 429 and attempt < max_attempts:
+                        if resp.status_code in CF_TRANSIENT_RETRY_STATUS_CODES and attempt < max_attempts:
                             backoff = CF_CAPACITY_RETRY_BACKOFF_SECONDS[
                                 min(attempt - 1, len(CF_CAPACITY_RETRY_BACKOFF_SECONDS) - 1)
                             ]
                             print(
-                                f"[cfproxy] CF capacity error (429) from {first_model} "
+                                f"[cfproxy] CF transient error ({resp.status_code}) from {first_model} "
                                 f"(attempt {attempt}/{max_attempts}) -- retrying after {backoff}s: "
                                 f"{error_body[:200]!r}",
                                 file=sys.stderr,

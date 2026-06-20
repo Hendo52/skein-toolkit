@@ -44,6 +44,18 @@ class TestRecommendAction(unittest.TestCase):
         action, _ = supervisor_triage.recommend_action(log)
         self.assertEqual(action, "retry")
 
+    def test_cf_500_internal_server_error_recommends_retry(self):
+        # Real text from this session (AT-1196, 2026-06-20): a long,
+        # otherwise-successful dispatch lost all its work to this exact
+        # error with no retry at the time -- should now recommend retry,
+        # not raise_oq, for the same reason 429 does.
+        log = (
+            '[cfproxy] CF API error (status 500): {"errors":[{"message":'
+            '"AiError: AiError: Internal server error","code":8004}]}'
+        )
+        action, _ = supervisor_triage.recommend_action(log)
+        self.assertEqual(action, "retry")
+
     def test_litellm_down_recommends_restart_dependency(self):
         # Real text from this session's toolchain-doctor.ps1 output.
         log = "PROBLEM: LiteLLM is not responding on http://127.0.0.1:4000."

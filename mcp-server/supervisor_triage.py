@@ -61,6 +61,19 @@ _RETRY_PATTERNS = [
     re.compile(r"\b429\b", re.IGNORECASE),
     re.compile(r"rate.?limit", re.IGNORECASE),
     re.compile(r"capacity", re.IGNORECASE),
+    # Found for real this session (AT-1196, 2026-06-20): a long, otherwise-
+    # successful dispatch lost all its work to a CF "Internal server error"
+    # (status 500, code 8004) on what was likely the final tool-result round
+    # trip -- the same class of transient CF-side hiccup as the 429s above,
+    # just a different status code. local-mcp.py's own CF_TRANSIENT_RETRY_
+    # STATUS_CODES now retries this at the proxy level; this signature lets
+    # the supervisor recognize a job that still failed despite that (e.g.
+    # the retry budget was exhausted too) as retryable rather than raising
+    # an OQ for something a simple re-dispatch can resolve. Deliberately NOT
+    # a bare \b500\b pattern -- that number appears too often in unrelated
+    # contexts (line counts, file sizes, port numbers) for a safe match;
+    # "internal server error" is CF's own specific phrase for this failure.
+    re.compile(r"internal server error", re.IGNORECASE),
     # Found for real this session (AT-1194's aider evaluation): a degenerate
     # empty completion from a CF model under context pressure -- this
     # project's own already-tracked chronic problem (cf-proxy-cheap-model-
