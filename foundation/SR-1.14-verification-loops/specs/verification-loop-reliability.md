@@ -46,6 +46,20 @@ property rather than an accidental design choice: any *new* verification
 logic added to this harness must be checked against this requirement
 before being accepted.
 
+**Corroborating evidence this generalizes beyond dispatched jobs
+(2026-06-20, odysseus, interactive Cline session, not `dispatch_coding_task`):**
+a task to fix Odysseus's launcher ended with `attempt_completion` declaring
+"Done. I fixed the two root causes..." and committing that claim --
+*before the launcher had ever been run.* It crashed immediately on the
+very next command (wrong Python interpreter). No harness consumed this
+claim automatically (a human read it directly), so this incident is the
+mirror image of VERIFY-1's own rationale: the requirement here protects a
+*consumer* from trusting a self-reported claim; the analogous fix for an
+interactive session is producer-side discipline (added to `.clinerules`
+in both Electron-Splines and a newly-created one for odysseus, which had
+none at all) -- run the actual change at least once before claiming it
+works, regardless of which side of the claim you're on.
+
 ### VERIFY-2 (= master spec REQ-7): Every real incident produces a regression test in the same commit as its fix
 
 **Status: Already the de facto practice all session** -- formalized here
