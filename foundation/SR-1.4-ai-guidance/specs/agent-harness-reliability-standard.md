@@ -9,6 +9,21 @@
 | **Agent** | `docs` |
 | **Model** | Tier-C (cross-cutting judgment across many incidents, not a routine writeup) |
 
+**Status update, 2026-06-20 (same day):** This document's 10 requirements
+have been split across five new dedicated SRs, one per harness-engineering
+layer, per architect request -- each owns a subset of these REQs plus
+layer-specific depth this cross-cutting document doesn't go into:
+
+- [SR-1.13 Tool Orchestration](../../SR-1.13-tool-orchestration/specs/tool-orchestration-reliability.md) -- REQ-4, REQ-5, REQ-6
+- [SR-1.14 Verification Loops](../../SR-1.14-verification-loops/specs/verification-loop-reliability.md) -- REQ-7
+- [SR-1.15 Context & Memory](../../SR-1.15-context-memory/specs/context-memory-reliability.md) -- REQ-1, REQ-8, REQ-9
+- [SR-1.16 Guardrails](../../SR-1.16-guardrails/specs/guardrails-reliability.md) -- REQ-2, REQ-3, REQ-10
+- [SR-1.17 Harness Observability](../../SR-1.17-harness-observability/specs/harness-observability-reliability.md) -- not directly mapped to a REQ above, but the precondition for every other layer's incidents being discoverable at all
+
+This document remains the canonical cross-cutting incident record (§2's
+inventory, §3's research citations); the five layer specs are where new,
+layer-specific depth gets added going forward.
+
 ---
 
 ## 1. What we are trying to do, and why
