@@ -65,9 +65,10 @@ class _ScriptedAsyncClient:
     tries several in one resolution."""
     responses_by_model: dict = {}
     calls: list = []
+    init_kwargs: list = []
 
     def __init__(self, *args, **kwargs):
-        pass
+        _ScriptedAsyncClient.init_kwargs.append(kwargs)
 
     async def __aenter__(self):
         return self
@@ -111,6 +112,38 @@ class TestProbeModel(unittest.IsolatedAsyncioTestCase):
 class TestResolveModelForTier(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         _ScriptedAsyncClient.calls = []
+        _ScriptedAsyncClient.init_kwargs = []
+
+    async def test_local_candidates_get_a_longer_timeout_than_cloud(self):
+        """Real incident (2026-06-20, AT-1197 dispatch attempt): every
+        local/* candidate was marked unreachable because Ollama's cold-load
+        time for a 12-23GB model on this hardware exceeds the short cloud-
+        model probe timeout. local/* candidates must get a generous timeout;
+        cloud candidates keep the short one (they have no cold-start cost
+        and should still fail fast on a real outage)."""
+        candidates = dispatch_io.TIER_MODEL_CANDIDATES["Tier-R"]
+        _ScriptedAsyncClient.responses_by_model = {m: _FakeResponse(200, {"choices": [{}]}) for m in candidates}
+        with patch.object(dispatch_io.httpx, "AsyncClient", _ScriptedAsyncClient):
+            await dispatch_io.resolve_model_for_tier("Tier-R", "key")
+        # First candidate (cf/kimi-k2.6) succeeds immediately, so only it
+        # was actually probed -- confirm its timeout is the short one, then
+        # directly verify the local/-vs-cloud timeout selection logic itself.
+        self.assertEqual(_ScriptedAsyncClient.init_kwargs[0]["timeout"], dispatch_io._PROBE_TIMEOUT_SECONDS)
+        self.assertGreater(dispatch_io._LOCAL_PROBE_TIMEOUT_SECONDS, dispatch_io._PROBE_TIMEOUT_SECONDS)
+
+    async def test_local_candidate_actually_gets_the_long_timeout_when_tried(self):
+        candidates = dispatch_io.TIER_MODEL_CANDIDATES["Tier-R"]
+        local_candidates = [m for m in candidates if m.startswith("local/")]
+        _ScriptedAsyncClient.responses_by_model = {m: _FakeResponse(500) for m in candidates[:-1]}
+        _ScriptedAsyncClient.responses_by_model[candidates[-1]] = _FakeResponse(200, {"choices": [{}]})
+        with patch.object(dispatch_io.httpx, "AsyncClient", _ScriptedAsyncClient):
+            await dispatch_io.resolve_model_for_tier("Tier-R", "key")
+        local_timeouts = [
+            kw["timeout"] for kw, model in zip(_ScriptedAsyncClient.init_kwargs, candidates)
+            if model in local_candidates
+        ]
+        self.assertTrue(local_timeouts, "expected at least one local/* candidate to be probed")
+        self.assertTrue(all(t == dispatch_io._LOCAL_PROBE_TIMEOUT_SECONDS for t in local_timeouts))
 
     async def test_returns_first_candidate_that_succeeds(self):
         candidates = dispatch_io.TIER_MODEL_CANDIDATES["Tier-C"]

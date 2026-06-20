@@ -84,6 +84,18 @@ TIER_MODEL_CANDIDATES: dict[str, tuple[str, ...]] = {
 DEFAULT_LITELLM_BASE_URL = "http://127.0.0.1:4000"
 _PROBE_TIMEOUT_SECONDS = 15.0
 
+# Real incident, 2026-06-20 (AT-1197 dispatch attempt): every local/*
+# candidate in a tier was marked unreachable by resolve_model_for_tier, even
+# though each one worked fine seconds later. Root cause confirmed directly:
+# Ollama unloads idle models (default keep_alive ~5min) and a cold reload of
+# a 12-23GB model on this machine's partial-GPU-offload hardware (RTX 3070,
+# 8GB VRAM + 64GB RAM -- ai-model-selection-policy.md S4.2) genuinely takes
+# well over 15s -- confirmed: qwen3.6 timed out at 20s but succeeded within
+# 120s. A cloud model (cf/kimi-k2.6) has no equivalent cold-start cost and
+# should still fail fast on a real outage, so it keeps the short timeout;
+# local models get a generous one instead of being misdiagnosed as down.
+_LOCAL_PROBE_TIMEOUT_SECONDS = 90.0
+
 
 def load_litellm_master_key(skein_mcp_server_dir: str) -> str:
     """Reads LITELLM_MASTER_KEY from the process environment first (the
@@ -154,7 +166,8 @@ async def resolve_model_for_tier(
     attempted: list[str] = []
     for model in candidates:
         attempted.append(model)
-        if await probe_model(model, master_key, base_url):
+        timeout = _LOCAL_PROBE_TIMEOUT_SECONDS if model.startswith("local/") else _PROBE_TIMEOUT_SECONDS
+        if await probe_model(model, master_key, base_url, timeout=timeout):
             return model, attempted
     return None, attempted
 
