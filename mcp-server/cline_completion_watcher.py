@@ -43,6 +43,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dispatch_io  # noqa: E402 -- kill_job_process_tree, reused not reimplemented
+
 CLINE_TASKS_DIR = os.path.expandvars(
     r"%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\tasks"
 )
@@ -145,22 +148,31 @@ def find_new_commits(repo_path: str, since_unix_ts: float) -> "list[str]":
     return [h for h in result.stdout.strip().splitlines() if h]
 
 
-def changed_files_in_commits(repo_path: str, commit_hashes: "list[str]") -> "list[str]":
-    """Union of files touched across the given commits, relative paths."""
-    if not commit_hashes:
+def changed_files_in_commits(repo_path: str, since_unix_ts: float) -> "list[str]":
+    """Union of files touched by every commit since since_unix_ts, relative
+    paths -- one git invocation total, not one per commit.
+
+    Real performance finding (2026-06-20): the original implementation
+    called `git show` once per commit hash. Several of this project's own
+    historical Cline tasks matched 1000+ commits in their lookback window
+    (an old completion timestamp plus a long session's worth of subsequent
+    activity) -- thousands of subprocess spawns per task, which is what
+    actually made a "nothing new to report" scan take minutes, not the
+    JSON-parsing last_scan_ts already fixed. `git log --name-only` over
+    the same --since window gets the same union of files in one call."""
+    if not os.path.isdir(os.path.join(repo_path, ".git")):
         return []
-    files: "set[str]" = set()
-    for h in commit_hashes:
-        try:
-            result = subprocess.run(
-                ["git", "show", "--name-only", "--format=", h],
-                cwd=repo_path, capture_output=True, text=True, timeout=15,
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            continue
-        if result.returncode == 0:
-            files.update(line.strip() for line in result.stdout.splitlines() if line.strip())
-    return sorted(files)
+    since_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(since_unix_ts))
+    try:
+        result = subprocess.run(
+            ["git", "log", f"--since={since_iso}", "--name-only", "--format="],
+            cwd=repo_path, capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+    return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
 
 
 def find_entrypoint_candidates(changed_files: "list[str]") -> "list[str]":
@@ -217,12 +229,24 @@ def smoke_test_entrypoint(
     except subprocess.TimeoutExpired:
         # Still running at the timeout -- the expected, good outcome for a
         # long-running launcher. Clean shutdown, not a crash.
-        proc.kill()
+        #
+        # Real incident, 2026-06-20 (found running this live, the day this
+        # was written): proc.kill() only kills the IMMEDIATE process, not
+        # what it spawns. tray.py specifically launches a whole service
+        # stack of its own (LiteLLM, Odysseus, multiple local-mcp.py
+        # instances) -- testing it left genuine orphans (~18 duplicate
+        # LiteLLM processes alone after a handful of smoke tests, plus
+        # duplicate Odysseus servers and MCP sub-servers), exactly the
+        # AT-1249 process-leak class this whole project already fixed
+        # once, reintroduced here. dispatch_io.kill_job_process_tree
+        # (taskkill /F /T) kills the whole tree, not just this one PID --
+        # reused directly rather than reimplemented.
+        dispatch_io.kill_job_process_tree(proc.pid)
         try:
             proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
             pass
-        return True, f"{relative_file_path}: still running after {timeout}s (no early crash) -- killed for cleanup"
+        return True, f"{relative_file_path}: still running after {timeout}s (no early crash) -- killed (whole tree) for cleanup"
 
     if proc.returncode != 0:
         tail = "\n".join(stdout.strip().splitlines()[-15:]) if stdout else "(no output captured)"
@@ -315,7 +339,7 @@ def check_for_new_completions(
             if not commits:
                 continue
             repos_touched.append(repo_name)
-            changed = changed_files_in_commits(repo_path, commits)
+            changed = changed_files_in_commits(repo_path, since_ts)
 
             test_results[repo_name] = run_test_suite(repo_name, repo_path)
 

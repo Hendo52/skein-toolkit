@@ -137,6 +137,36 @@ class TestSmokeTestEntrypoint(unittest.TestCase):
         # incident, AT-1249).
         self.assertLess(elapsed, 10.0)
 
+    def test_killing_a_launcher_also_kills_what_it_spawned(self):
+        """Real incident, 2026-06-20 (found running this live, same day):
+        proc.kill() only kills the immediate process. tray.py specifically
+        launches a whole service stack of its own (LiteLLM, Odysseus,
+        multiple local-mcp.py instances) -- testing it left ~18 duplicate
+        LiteLLM processes alone after a handful of smoke tests. Reproduces
+        the actual shape: a launcher that spawns a real child process and
+        writes the child's PID to a file, so this test can independently
+        verify the CHILD is also dead, not just the launcher itself."""
+        import psutil
+
+        pid_file = os.path.join(self.tmpdir, "child.pid")
+        script = os.path.join(self.tmpdir, "launcher_with_child.py")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(
+                "import subprocess, sys, time\n"
+                f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'])\n"
+                f"with open(r'{pid_file}', 'w') as f:\n"
+                "    f.write(str(child.pid))\n"
+                "time.sleep(600)\n"
+            )
+        passed, _detail = watcher.smoke_test_entrypoint(self.tmpdir, "launcher_with_child.py", timeout=3.0)
+        self.assertTrue(passed)
+
+        with open(pid_file) as f:
+            child_pid = int(f.read().strip())
+        # Give the OS a moment to fully reap the killed tree.
+        time.sleep(1)
+        self.assertFalse(psutil.pid_exists(child_pid), "child process survived the launcher's kill -- orphan leaked")
+
     def test_a_clean_fast_exit_is_treated_as_passing(self):
         script = os.path.join(self.tmpdir, "quick_launcher.py")
         with open(script, "w", encoding="utf-8") as f:
@@ -206,6 +236,53 @@ class TestFindNewCommits(unittest.TestCase):
         not_a_repo = tempfile.mkdtemp()
         try:
             self.assertEqual(watcher.find_new_commits(not_a_repo, 0), [])
+        finally:
+            import shutil
+            shutil.rmtree(not_a_repo)
+
+
+class TestChangedFilesInCommits(unittest.TestCase):
+    """Real performance finding (2026-06-20): the original implementation
+    called `git show` once per commit hash -- several real historical
+    Cline tasks matched 1000+ commits in their lookback window, meaning
+    thousands of subprocess spawns for a single task. One `git log
+    --name-only` call over the same window gets the same union of files."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        subprocess.run(["git", "init", "--quiet"], cwd=self.tmpdir, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=self.tmpdir, check=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=self.tmpdir, check=True)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_returns_the_union_of_files_across_multiple_commits(self):
+        before = time.time()
+        for name in ("a.txt", "b.txt"):
+            with open(os.path.join(self.tmpdir, name), "w") as f:
+                f.write("x")
+            subprocess.run(["git", "add", name], cwd=self.tmpdir, check=True)
+            subprocess.run(["git", "commit", "-m", f"add {name}", "--quiet"], cwd=self.tmpdir, check=True)
+        changed = watcher.changed_files_in_commits(self.tmpdir, before - 60)
+        self.assertEqual(set(changed), {"a.txt", "b.txt"})
+
+    def test_only_one_git_subprocess_regardless_of_commit_count(self):
+        before = time.time()
+        for i in range(10):
+            with open(os.path.join(self.tmpdir, f"f{i}.txt"), "w") as f:
+                f.write("x")
+            subprocess.run(["git", "add", f"f{i}.txt"], cwd=self.tmpdir, check=True)
+            subprocess.run(["git", "commit", "-m", f"commit {i}", "--quiet"], cwd=self.tmpdir, check=True)
+        with unittest.mock.patch.object(watcher.subprocess, "run", wraps=watcher.subprocess.run) as mock_run:
+            watcher.changed_files_in_commits(self.tmpdir, before - 60)
+            self.assertEqual(mock_run.call_count, 1)
+
+    def test_non_git_directory_returns_empty(self):
+        not_a_repo = tempfile.mkdtemp()
+        try:
+            self.assertEqual(watcher.changed_files_in_commits(not_a_repo, 0), [])
         finally:
             import shutil
             shutil.rmtree(not_a_repo)
