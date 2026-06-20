@@ -181,6 +181,82 @@ result, one subprocess instead of N. Confirmed via a test that asserts
 `subprocess.run` is called exactly once regardless of commit count, not
 just that the output looks right.
 
+**Five more real findings, all from actually running the shipped watcher
+against real historical data rather than trusting it from reading the
+code -- the exact discipline this watcher exists to enforce on Cline,
+turned on its own development:**
+
+1. **Orphaned grandchild processes (the irony of a verification tool
+   needing verification was not lost).** `smoke_test_entrypoint`'s
+   timeout-handling branch used `proc.kill()` -- this only kills the
+   immediate spawned process. tray.py specifically launches a whole
+   service stack of its own (LiteLLM, Odysseus, multiple local-mcp.py
+   instances) -- testing it during a backlog-clearing run left genuine
+   orphans: ~18 duplicate LiteLLM processes alone, plus duplicate
+   Odysseus servers and MCP sub-servers. Exactly the AT-1249
+   process-leak class this project already fixed once, reintroduced by
+   this watcher's own new code. Fixed by reusing
+   `dispatch_io.kill_job_process_tree` (taskkill /F /T) directly rather
+   than reimplementing process-tree killing a second time.
+
+2. **The same file was smoke-tested once per historical task that
+   touched it, not once per scan.** A file's current on-disk state is
+   identical regardless of which task's lookback window surfaced it --
+   re-launching tray.py once per task during a single backlog-clearing
+   run was pure waste, and was part of what produced finding #1's ~18
+   leaked processes. Fixed with an in-run dedup set.
+
+3. **UnicodeDecodeError from relying on Windows' default cp1252
+   decoding.** All `subprocess.run`/`Popen` calls capturing text output
+   needed explicit `encoding="utf-8", errors="replace"` -- the same
+   encoding-bug class this project has hit repeatedly elsewhere (see
+   CLAUDE.md's encoding-hygiene rule), just not yet applied to this new
+   file.
+
+4. **`"[WinError 2] The system cannot find the file specified"` for
+   every configured test command.** A relative executable path
+   (`venv\Scripts\python.exe`, or the bare name `npm`) does not resolve
+   relative to `subprocess.run`'s `cwd=` parameter on Windows --
+   argv[0] is resolved against the *calling* process's own cwd and
+   PATH, not the child's. Fixed via a `<REPO_VENV_PYTHON>` sentinel
+   resolved to an absolute path at call time, and `shutil.which("npm")`
+   for the PATHEXT-aware lookup a real shell would do automatically.
+   Side effect of actually getting odysseus's test command to run for
+   real: its smoke test then surfaced a genuine, separate gap --
+   `pystray` (needed by `tray.py`'s tray-icon code path) was never
+   declared as a real dependency, only ever `pip install`-ed by the
+   packaged-build script. A fresh dev venv had none at all, and earlier
+   AT-1246 verification had missed this because it only exercised
+   `ServiceManager`'s class methods directly, never ran `tray.py` as a
+   script. Fixed in odysseus's own `requirements.txt`.
+
+5. **A second, subtler orphan race, found reproducing fix #1 live a
+   second time.** tray.py's own `ServiceManager._ensure_running` polls
+   each service's health sequentially before starting the next, so a
+   slow-starting service (Odysseus's uvicorn, and the 4 MCP
+   sub-servers it spawns in turn) can still be mid-spawn at the exact
+   instant the smoke test's timeout fires and the first `taskkill /T`
+   takes its process-tree snapshot -- a child that finishes
+   `Popen()`-ing a moment after that snapshot is not in it, and
+   survives as a real orphan even though the first kill pass "worked"
+   by its own logic. Confirmed directly: a single pass left Odysseus's
+   uvicorn and its 4 MCP children alive for several minutes after
+   tray.py itself was already dead. Fixed with a second kill pass after
+   a 1.5s gap (an already-dead PID is a harmless no-op for taskkill).
+   Verified clean across 4 consecutive live reproductions against the
+   real tray.py after the fix, 0 clean out of multiple attempts before
+   it. This specific race is inherently OS-timing-dependent and not
+   reliably reproducible deterministically on a unit-test timescale --
+   the regression test instead pins down the behavior the fix relies
+   on (two kill passes with a real gap), confirmed live rather than
+   only unit-tested.
+
+   Separately, BurntToast's XML template choked on a raw ANSI escape
+   byte (0x1B) captured verbatim from a smoke-test failure's subprocess
+   output ("hexadecimal value 0x1B, is an invalid character") --
+   `cline-completion-watch.ps1` now strips C0 control characters and
+   caps notification length before building the toast.
+
 **Operational note:** the Scheduled Task has no expiry (unlike the
 originally-planned CronCreate approach) -- it runs every hour
 indefinitely once registered. The one standing cost is the BurntToast
