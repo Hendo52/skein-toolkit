@@ -419,11 +419,51 @@ matching; regression test added using the exact real wrapped text. After
 the fix, the dry run correctly recommends `restart_dependency` -- matching
 exactly what was actually done to resolve that failure for real.
 
-**Degraded-supervision mode (when Claude itself is unavailable): open,
-tracked as OQ-294, not yet implemented.** See S3.5 and OQ-294 for the
-options under consideration (a narrowed action set for a cheaper fallback
-model vs. the full menu vs. no degraded mode at all) -- this AT's primary
-mechanism above is independent of that decision and was not blocked by it.
+**Degraded-supervision mode (when Claude itself is unavailable):
+implemented (`mcp-server/supervisor_degraded_mode.py`), per OQ-294's
+resolution (Option B -- narrowed action set, retry + raise_oq only).
+
+Detection cannot rely on Claude's own introspection -- if Claude truly
+cannot run, nothing running *as* Claude can notice that and hand off.
+Instead, the full supervisor (Claude, in a live wake cycle) calls
+`record_heartbeat()` at the end of every cycle that successfully read
+`supervision-status.json`, whether or not there was anything to act on. A
+separate, Claude-independent entry point
+(`python supervisor_degraded_mode.py`, invokable from a Scheduled Task with
+no live Claude Code session, the same way `cline_completion_watcher.py`
+is) checks whether that heartbeat has gone stale (default threshold: 3
+hours, generously larger than any wake interval used this session) and
+only activates if so -- a healthy full supervisor is never second-guessed
+or duplicated.
+
+When activated: `recommend_action_degraded()` wraps
+`supervisor_triage.recommend_action()` and downgrades a
+`restart_dependency` recommendation to `raise_oq` -- OQ-294's explicit
+boundary is that restarting a dependency (or reverting a job's work,
+which the underlying function never auto-recommends anyway) requires
+judgment about whether the action is actually safe, reserved for the
+full-capability supervisor. For a `retry` recommendation, the cycle
+additionally resolves which model the retry dispatch should actually use
+via `dispatch_io.resolve_model_for_tier`'s existing fallback-ladder (the
+"hand off to a cheaper model" OQ-294 describes) -- it never assumes the
+job's original model is still usable, since if Claude itself is
+unavailable for account-wide reasons (e.g. credit exhaustion), other
+models on the same account may be unavailable for the same reason; if no
+candidate model is reachable either, the recommendation escalates to
+`raise_oq` rather than recommending a retry with nothing to retry with.
+
+Every activation is logged as a named, observable mode per the First-
+Class Scenarios policy -- each recommendation is tagged
+`"mode": "Tier-2-degraded"` and its reasoning states the specific
+heartbeat-staleness reason that triggered it (e.g. "Tier-2-degraded:
+weak-model active because Claude unavailable (last full-supervisor
+heartbeat was 14400s ago (threshold 10800s))"). 19 new tests; the CLI
+entry point was also smoke-tested directly against this machine's real
+`~/.cf_proxy_orchestrator/supervision-status.json` (no heartbeat had ever
+been recorded yet, since the full-supervisor side of this hand-off is a
+documentation requirement on future wake cycles, not a mechanism this AT
+could exercise live) -- it correctly activated and recommended `raise_oq`
+for a real stuck test job with no matching failure signature in its log.
 
 ---
 
