@@ -305,12 +305,19 @@ class TestLastScanOptimization(unittest.TestCase):
         for d in (self.tasks_dir, self.repos_dir, os.path.dirname(self.state_path)):
             shutil.rmtree(d, ignore_errors=True)
 
-    def _make_task(self, task_id, completed=True):
+    def _make_task(self, task_id, completed=True, completion_ts=None):
+        # Real epoch-milliseconds, not an artificial placeholder -- a tiny
+        # value like 2000ms-since-epoch breaks find_new_commits downstream
+        # (time.localtime() of a near-1970 timestamp raises OSError on
+        # Windows). Default to "a moment ago" so a real --since git query
+        # against it behaves like production data.
+        if completion_ts is None:
+            completion_ts = int(time.time() * 1000)
         task_dir = os.path.join(self.tasks_dir, task_id)
         os.makedirs(task_dir, exist_ok=True)
-        messages = [{"type": "say", "say": "text", "ts": 1000}]
+        messages = [{"type": "say", "say": "text", "ts": completion_ts - 1000}]
         if completed:
-            messages.append({"type": "ask", "ask": "completion_result", "ts": 2000, "text": ""})
+            messages.append({"type": "ask", "ask": "completion_result", "ts": completion_ts, "text": ""})
         with open(os.path.join(task_dir, "ui_messages.json"), "w", encoding="utf-8") as f:
             json.dump(messages, f)
         return task_dir
@@ -323,6 +330,43 @@ class TestLastScanOptimization(unittest.TestCase):
         with unittest.mock.patch.object(watcher, "get_latest_completion_event") as mock_get:
             watcher.check_for_new_completions(repos={}, state_path=self.state_path, tasks_dir=self.tasks_dir)
             mock_get.assert_not_called()
+
+    def test_the_same_entrypoint_file_is_smoke_tested_only_once_per_run(self):
+        """Real incident, 2026-06-20: before this dedup existed, the same
+        launcher file (tray.py) got smoke-tested once per historical task
+        that happened to touch it in its lookback window -- the file's
+        on-disk state is identical regardless of which task surfaced it,
+        so repeated launches were pure waste (and, before the tree-kill
+        fix in the same incident, the actual source of ~18 leaked
+        processes)."""
+        repo_dir = os.path.join(self.repos_dir, "repo-a")
+        os.makedirs(repo_dir)
+        subprocess.run(["git", "init", "--quiet"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=repo_dir, check=True)
+        with open(os.path.join(repo_dir, "tray.py"), "w") as f:
+            f.write("print('hi')\n")
+        subprocess.run(["git", "add", "tray.py"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "add tray.py", "--quiet"], cwd=repo_dir, check=True)
+
+        # Two separate "completed" tasks, both old enough that their
+        # lookback windows both include the tray.py commit above.
+        self._make_task("task-1")
+        self._make_task("task-2")
+
+        call_count = 0
+        original = watcher.smoke_test_entrypoint
+
+        def counting_smoke_test(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return original(*args, **kwargs)
+
+        with unittest.mock.patch.object(watcher, "smoke_test_entrypoint", side_effect=counting_smoke_test):
+            watcher.check_for_new_completions(
+                repos={"repo-a": repo_dir}, state_path=self.state_path, tasks_dir=self.tasks_dir,
+            )
+        self.assertEqual(call_count, 1, "tray.py should only be smoke-tested once across both tasks")
 
     def test_a_task_modified_after_the_last_scan_is_still_picked_up(self):
         self._make_task("task-a", completed=False)

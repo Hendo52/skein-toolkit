@@ -305,6 +305,14 @@ def check_for_new_completions(
     last_scan_ts = state.get("last_scan_ts", 0)
     this_scan_started_at = time.time()
     reports: "list[dict]" = []
+    # (repo_path, relative_file_path) pairs already smoke-tested this run --
+    # the same file's current on-disk state is identical regardless of
+    # which historical task's lookback window happened to surface it, so
+    # there is no reason to actually re-launch it (and, before the
+    # process-tree-kill fix, re-launching tray.py repeatedly during one
+    # backlog-clearing run was exactly what produced ~18 duplicate LiteLLM
+    # processes -- this also bounds the cost even with that fixed).
+    smoke_tested_this_run: "set[tuple[str, str]]" = set()
 
     for task_dir in find_cline_task_dirs(tasks_dir):
         task_id = os.path.basename(task_dir)
@@ -344,6 +352,10 @@ def check_for_new_completions(
             test_results[repo_name] = run_test_suite(repo_name, repo_path)
 
             for entry_file in find_entrypoint_candidates(changed):
+                key = (repo_path, entry_file)
+                if key in smoke_tested_this_run:
+                    continue
+                smoke_tested_this_run.add(key)
                 smoke_results.append(smoke_test_entrypoint(repo_path, entry_file, smoke_test_timeout))
 
         if repos_touched:
