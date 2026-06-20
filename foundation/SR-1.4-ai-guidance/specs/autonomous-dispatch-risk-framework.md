@@ -1,4 +1,4 @@
-﻿# Spec: Autonomous Dispatch Risk Framework (AT-1235)
+# Spec: Autonomous Dispatch Risk Framework (AT-1235)
 
 **Date:** 2026-06-19
 **Status:** Draft -- OQ-296 resolved 2026-06-20 (Option B: automated/scheduled push via AT-1247). OQ-295 remains open.
