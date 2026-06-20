@@ -150,10 +150,46 @@ here rather than just the conclusion.
    instance of this project's own standing practice (verify, don't
    estimate) applied to its own tooling-choice process, not just to code.
 
-**Operational note:** the CronCreate job auto-expires 7 days from
-whenever it was last (re)created. There is no standing alert for the
-expiry itself -- renewing it requires either the architect or a future
-session noticing and re-running `CronCreate` with the same prompt/schedule.
+5. **The resolution above was itself superseded the same day, by a second
+   round of direct testing.** Implementing Option B for real (calling
+   `CronCreate` with `durable: true`) immediately surfaced a finding that
+   invalidated the whole basis for choosing B: `CronList` showed the job
+   as `[session-only]` despite `durable: true` being explicitly passed.
+   A second investigation found no public documentation for a `durable`
+   parameter on this tool at all -- CronCreate jobs are session-scoped
+   in this environment regardless of what's passed. The architect's own
+   "verify, don't estimate" standard caught this before it shipped
+   silently broken: **the actual implementation switched to Option A**
+   (a real Windows Scheduled Task, `mcp-server/register-cline-watcher-task.ps1`),
+   with `PushNotification`'s alerting replaced by a real Windows toast
+   (`BurntToast`, installed with explicit architect approval and verified
+   visible via a live test before being relied on) called from
+   `mcp-server/cline-completion-watch.ps1`. `LogonType Interactive` (not
+   S4U, `scheduled-git-push.ps1`'s choice) -- confirmed by direct research
+   that BurntToast needs the visible desktop session.
+
+**A second real performance finding, found running the shipped version
+live:** the original `changed_files_in_commits` called `git show` once
+per commit hash. Several of this project's own historical Cline tasks
+matched 1000+ commits in their lookback window (an old completion
+timestamp plus a long session's worth of subsequent activity) -- one task
+alone triggered 1553 separate `git show` subprocess spawns. This, not the
+JSON-parsing `last_scan_ts` already fixed, was what made a "nothing new to
+report" scan take minutes. Fixed by replacing the per-commit loop with a
+single `git log --name-only` call over the same time window -- same
+result, one subprocess instead of N. Confirmed via a test that asserts
+`subprocess.run` is called exactly once regardless of commit count, not
+just that the output looks right.
+
+**Operational note:** the Scheduled Task has no expiry (unlike the
+originally-planned CronCreate approach) -- it runs every hour
+indefinitely once registered. The one standing cost is the BurntToast
+dependency itself; if a future Windows update or PSGallery policy change
+breaks it, the watcher's own log
+(`%USERPROFILE%\.cline_completion_watcher_run.log`) still records every
+run and every failure even if the notification itself silently stops
+working -- there is no second-order alert for *that*, so the log is
+worth checking occasionally, not just trusting the absence of a toast.
 
 ## 4. AT tasks spawned
 
