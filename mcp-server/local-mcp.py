@@ -2791,6 +2791,20 @@ CODING_TASK_STATE_DIR = os.environ.get(
 RUN_CLINE_SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run-cline.ps1")
 DEFAULT_DISPATCH_TIMEOUT_SECONDS = 1200
 
+# Real incident, 2026-06-21 (AT-1254): a Large-effort task spent its entire
+# 1200s budget on legitimate, on-track research (reading stream_agent_loop,
+# the existing tool-policy/admin-gating code, panel CSS patterns) and timed
+# out with zero commits -- not because anything was wrong, just because a
+# cross-cutting UI+backend task genuinely needs more exploration time than
+# a small pattern-addition does. Scale the timeout from the AT row's own
+# Effort column (already-present metadata, no new field) rather than a
+# single fixed budget for every task regardless of size.
+DISPATCH_TIMEOUT_BY_EFFORT_SECONDS = {
+    "Small": 900,
+    "Medium": 1200,
+    "Large": 2400,
+}
+
 
 @mcp.tool()
 async def dispatch_coding_task(at_id: int, repo_root: str) -> str:
@@ -2915,11 +2929,15 @@ async def dispatch_coding_task(at_id: int, repo_root: str) -> str:
     os.makedirs(CODING_TASK_STATE_DIR, exist_ok=True)
     log_path = os.path.join(CODING_TASK_STATE_DIR, f"{job_id}.log")
 
+    timeout_seconds = DISPATCH_TIMEOUT_BY_EFFORT_SECONDS.get(
+        at_row["effort"], DEFAULT_DISPATCH_TIMEOUT_SECONDS
+    )
+
     log_file = open(log_path, "w", encoding="utf-8")
     try:
         proc = dispatch_io.spawn_cline_process(
             RUN_CLINE_SCRIPT_PATH, worktree_path, model, task_prompt,
-            DEFAULT_DISPATCH_TIMEOUT_SECONDS, log_file,
+            timeout_seconds, log_file,
             cwd=os.path.dirname(os.path.abspath(__file__)),
         )
     except Exception as e:

@@ -34,6 +34,7 @@ _AT_QUEUE_WITH_TIER = (
     "|----|------|-------------|---------------|--------|------------|\n"
     "| AT-1228 | **Do the thing. Model: Tier-C.** | spec1 | evidence1 | Medium | None |\n"
     "| AT-1222 | **No tier annotation at all.** | spec2 | evidence2 | Small | None |\n"
+    "| AT-1254 | **A large cross-cutting task. Model: Tier-M.** | spec3 | evidence3 | Large | None |\n"
 )
 
 
@@ -68,8 +69,12 @@ class _DispatchTestCase(unittest.IsolatedAsyncioTestCase):
         shutil.rmtree(self._tmpdir, ignore_errors=True)
         for repo in self._repos_to_clean:
             shutil.rmtree(repo, ignore_errors=True)
-            sibling_worktree = repo + "-at-1228-dispatch"
-            shutil.rmtree(sibling_worktree, ignore_errors=True)
+            # Sibling worktrees this test class's fixture AT rows can create
+            # (AT-1228's dispatch tests; AT-1254 added for timeout-scaling
+            # coverage) -- clean up both rather than hardcoding just one.
+            for at_id in (1228, 1254):
+                sibling_worktree = repo + f"-at-{at_id}-dispatch"
+                shutil.rmtree(sibling_worktree, ignore_errors=True)
 
     def _make_repo(self) -> str:
         repo = _init_real_git_repo()
@@ -160,6 +165,27 @@ class TestDispatchCodingTaskHappyPath(_DispatchTestCase):
         mock_spawn.assert_called_once()
         self.assertEqual(mock_spawn.call_args[0][1], worktree_path)
         self.assertEqual(mock_spawn.call_args[0][2], "claude/sonnet-4")
+        self.assertEqual(mock_spawn.call_args[0][4], local_mcp.DISPATCH_TIMEOUT_BY_EFFORT_SECONDS["Medium"])
+
+    async def test_large_effort_task_gets_a_longer_timeout(self):
+        """Real incident, 2026-06-21 (AT-1254): a Large-effort task spent its
+        whole 1200s default budget on legitimate research and timed out with
+        zero commits. The timeout must scale from the AT row's own Effort
+        column, not use one fixed budget regardless of task size."""
+        repo = self._make_repo()
+        fake_proc = unittest.mock.MagicMock()
+        fake_proc.pid = 424243
+        with unittest.mock.patch.object(
+            local_mcp.dispatch_io, "resolve_model_for_tier",
+            unittest.mock.AsyncMock(return_value=("claude/sonnet-4", ["claude/sonnet-4"])),
+        ), unittest.mock.patch.object(local_mcp.dispatch_io, "spawn_cline_process", return_value=fake_proc) as mock_spawn:
+            job_id = await local_mcp.dispatch_coding_task(1254, repo)
+        self.assertFalse(job_id.startswith("ERROR"))
+        self.assertEqual(mock_spawn.call_args[0][4], local_mcp.DISPATCH_TIMEOUT_BY_EFFORT_SECONDS["Large"])
+        self.assertGreater(
+            local_mcp.DISPATCH_TIMEOUT_BY_EFFORT_SECONDS["Large"],
+            local_mcp.DISPATCH_TIMEOUT_BY_EFFORT_SECONDS["Medium"],
+        )
 
     async def test_second_dispatch_to_same_repo_while_first_running_is_rejected(self):
         repo = self._make_repo()
