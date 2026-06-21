@@ -555,6 +555,18 @@ class TestBuildTaskPrompt(unittest.TestCase):
         self.assertIn("the thing is done", prompt)
         self.assertIn("CLAUDE.md", prompt)
 
+    def test_mentions_clinerules_too_not_only_claude_md(self):
+        """Real incident (2026-06-21): odysseus (and any future non-
+        Electron-Splines dispatch target) uses .clinerules, not CLAUDE.md --
+        a prompt naming only CLAUDE.md never tells the model to look for the
+        conventions file that actually exists in that repo. Three odysseus
+        dispatches (AT-1251/1252/1253) ran without this instruction ever
+        pointing at .clinerules at all."""
+        at_row = {"description": "Do the thing", "spec_issue": "x", "exit_evidence": "y"}
+        prompt = dispatch_io.build_task_prompt(1253, at_row, "C:/repo")
+        self.assertIn("CLAUDE.md", prompt)
+        self.assertIn(".clinerules", prompt)
+
     def test_does_not_assert_a_specific_ledger_path_or_repo_specific_sections(self):
         """Real incident (2026-06-20): AT-1196 dispatched into skein-toolkit
         burned several tool calls because the prompt asserted a specific

@@ -601,13 +601,24 @@ def build_task_prompt(at_id: int, at_row: dict, repo_root_for_paths: str) -> str
     don't exist at the asserted path. Fix: don't tell the model to go reread
     the ledger at all (the description/spec/exit-evidence below are already
     the full extracted content, no re-read needed), and word the CLAUDE.md
-    instruction generically rather than naming specific sections."""
+    instruction generically rather than naming specific sections.
+
+    Second real incident (2026-06-21, AT-1251/1252/1253 dispatched into
+    odysseus): this generic wording still only named "CLAUDE.md" -- odysseus
+    (and any future non-Electron-Splines target) uses `.clinerules` instead,
+    a different filename this instruction never told the model to look for.
+    A repo-specific lesson (worktree venv paths, PowerShell-not-cmd syntax,
+    added to odysseus's .clinerules after watching a dispatch flail on
+    exactly that) would never reach a dispatched session through this
+    instruction at all -- only the interactive VS Code extension reads
+    .clinerules natively. Fixed by naming both conventions-file forms."""
     return (
         f"You are implementing AT-{at_id} (full description below -- this "
         f"is already the complete extracted task, no need to re-read any "
         f"ai-task-queue.md file).\n\n"
-        f"Read this repo's CLAUDE.md in its root, if one exists, and follow "
-        f"its conventions before making changes.\n\n"
+        f"Read this repo's CLAUDE.md or .clinerules file in its root "
+        f"(whichever exists), and follow its conventions before making "
+        f"changes.\n\n"
         f"Task:\n{at_row['description']}\n\n"
         f"Spec / Issue references: {at_row['spec_issue']}\n\n"
         f"Exit evidence required (treat as acceptance criteria): "
